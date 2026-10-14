@@ -6,6 +6,21 @@
 
 <p align="center"><b>AI music detection</b> — распознаёт музыку, сгенерированную Suno, прямо в звуке, который играет ваш компьютер, и по желанию пропускает её.</p>
 
+<p align="center">
+  <a href="https://github.com/moonzlo/SunoCheck/releases/latest"><img src="https://img.shields.io/github/v/release/moonzlo/SunoCheck?sort=semver&logo=github&label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7" alt="Последний релиз"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/releases"><img src="https://img.shields.io/github/downloads/moonzlo/SunoCheck/total?logo=github&label=%D1%81%D0%BA%D0%B0%D1%87%D0%B8%D0%B2%D0%B0%D0%BD%D0%B8%D0%B9" alt="Скачивания"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/moonzlo/SunoCheck/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/moonzlo/SunoCheck/release.yml?logo=githubactions&logoColor=white&label=%D1%81%D0%B1%D0%BE%D1%80%D0%BA%D0%B0%20exe" alt="Сборка exe"></a>
+  <a href="#проверка-exe"><img src="https://img.shields.io/badge/VirusTotal-%D0%BA%D0%B0%D0%B6%D0%B4%D1%8B%D0%B9%20%D1%80%D0%B5%D0%BB%D0%B8%D0%B7-394EFF?logo=virustotal&logoColor=white" alt="VirusTotal"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/attestations"><img src="https://img.shields.io/badge/%D1%81%D0%B1%D0%BE%D1%80%D0%BA%D0%B0-%D0%B0%D1%82%D1%82%D0%B5%D1%81%D1%82%D0%BE%D0%B2%D0%B0%D0%BD%D0%B0-2EA44F?logo=githubactions&logoColor=white" alt="Аттестация сборки"></a>
+  <br>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/moonzlo/SunoCheck?label=%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F" alt="Лицензия MIT"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv"></a>
+</p>
+
 <p align="center"><b>Русский</b> · <a href="README.en.md">English</a></p>
 
 ---
@@ -24,6 +39,7 @@
 - [Как это работает](#как-это-работает)
 - [Требования](#требования)
 - [Установка](#установка)
+- [Проверка exe](#проверка-exe)
 - [Использование](#использование)
 - [Чёрный список авторов](#чёрный-список-авторов)
 - [Настройки](#настройки)
@@ -50,11 +66,19 @@
 ## Требования
 
 - Windows 10 или 11.
-- [uv](https://docs.astral.sh/uv/) (сам поставит Python 3.12).
+- Только для запуска из исходников: [uv](https://docs.astral.sh/uv/) (сам поставит Python 3.12).
 - Устройство вывода с частотой 44.1 или 48 кГц. Гребёнке нужны линии до 15.8 кГц, поэтому при частоте ниже 33.2 кГц приложение остановится с ошибкой.
 - Для названий треков и для скипа — плеер, который сообщает Windows, что играет (медиасессия), и слушается мультимедийных клавиш. Так делают Яндекс Музыка, Spotify, браузеры и большинство плееров.
 
 ## Установка
+
+### Готовый exe
+
+Скачайте **[SunoCheck.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck.exe)** из [последнего релиза](https://github.com/moonzlo/SunoCheck/releases/latest), положите в любую папку, куда у вас есть права на запись (например, `Документы\SunoCheck`), и запустите. Установка не нужна: данные приложение хранит в папке `data` рядом с exe.
+
+Exe не подписан сертификатом, поэтому при первом запуске SmartScreen может показать «Windows защитила ваш компьютер»: нажмите «Подробнее» → «Выполнить в любом случае». Перед этим можно убедиться, что файл настоящий, см. [Проверка exe](#проверка-exe).
+
+### Из исходников
 
 ```powershell
 git clone https://github.com/moonzlo/SunoCheck.git
@@ -62,9 +86,30 @@ cd SunoCheck
 uv sync
 ```
 
+## Проверка exe
+
+Каждый релиз собирается GitHub Actions из тега этого репозитория ([release.yml](.github/workflows/release.yml)), без участия чьего-либо компьютера. Сборка проходит три проверки, их результаты есть в описании релиза:
+
+- **VirusTotal.** Exe загружается на [VirusTotal](https://www.virustotal.com/) до публикации; в описании релиза — число срабатываний и ссылка на полный отчёт. Если VirusTotal не успел проверить файл, релиз не публикуется.
+- **Контрольная сумма SHA-256** — в описании релиза и в файле `SHA256SUMS.txt`. Сравните с хешем скачанного файла:
+
+  ```powershell
+  (Get-FileHash .\SunoCheck.exe -Algorithm SHA256).Hash
+  ```
+
+- **Аттестация сборки.** GitHub подписывает связь «файл ↔ коммит ↔ workflow». Проверка (нужен [GitHub CLI](https://cli.github.com/)):
+
+  ```powershell
+  gh attestation verify .\SunoCheck.exe --repo moonzlo/SunoCheck
+  ```
+
+Отдельные антивирусы иногда помечают программы, собранные PyInstaller: их распаковщик похож на упаковщики вредоносного ПО. Если сомневаетесь, запускайте из исходников.
+
 ## Использование
 
 ### Окно с графиками
+
+Запустите `SunoCheck.exe` или, из исходников:
 
 ```powershell
 uv run sunocheck-gui
@@ -130,7 +175,7 @@ uv run sunocheck --help
 
 ## Где лежат данные
 
-Папка `data/` создаётся в каталоге, из которого запущено приложение. Всё в ней остаётся на вашем компьютере.
+Папка `data/` создаётся рядом с `SunoCheck.exe`, а при запуске из исходников — в каталоге, из которого запущено приложение. Всё в ней остаётся на вашем компьютере.
 
 | Путь | Что |
 |---|---|
@@ -166,8 +211,23 @@ uv run sunocheck --help
 ```powershell
 uv sync --all-groups      # + pytest, ruff и зависимости исследования
 uv run pytest             # тесты чистой логики (решение, чёрный список, настройки, fakeprint)
-uv run ruff check src tests tools
+uv run ruff check src tests tools packaging .github/scripts
+uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck.exe
 ```
+
+Каждый push и pull request в `main` проходит [CI](.github/workflows/ci.yml): линтер, тесты и сборка exe (артефакт хранится 14 дней).
+
+Выпуск релиза:
+
+1. Поднять `version` в `pyproject.toml` и перенести изменения из `[Unreleased]` в новый раздел `CHANGELOG.md`.
+2. Закоммитить и поставить тег той же версии:
+
+   ```powershell
+   git tag v0.2.0
+   git push origin main v0.2.0
+   ```
+
+[release.yml](.github/workflows/release.yml) сверит тег с версией и CHANGELOG, соберёт exe, проверит его на VirusTotal и опубликует релиз с описанием из CHANGELOG.
 
 Структура:
 
@@ -179,6 +239,8 @@ uv run ruff check src tests tools
 | `tools/` | инструменты: смоук-тест окна со снимками, замер отзывчивости, повтор решения по записям |
 | `research/` | исследование детекторов |
 | `docs/` | документация функций |
+| `packaging/` | сборка exe (PyInstaller) |
+| `.github/` | CI, релиз, скрипты VirusTotal и описания релиза |
 
 Код написан в функциональном стиле: чистые функции и неизменяемые dataclass; классы только для внешних систем (захват звука, медиасессия, окно). Ошибки не маскируются запасными путями, а останавливают работу с понятным сообщением.
 
@@ -193,5 +255,6 @@ uv run ruff check src tests tools
 - Веса fakeprint — [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector), Matěj Štágl, MIT ([LICENSE-lofcz.txt](src/sunocheck/models/LICENSE-lofcz.txt)).
 - Корпус исследования: [Kukedlc/suno-ai-music-dataset](https://huggingface.co/datasets/Kukedlc/suno-ai-music-dataset), [FMA](https://github.com/mdeff/fma), [MTG-Jamendo](https://mtg.github.io/mtg-jamendo-dataset/).
 - Интерфейс: [PySide6](https://doc.qt.io/qtforpython-6/) (LGPL) и [pyqtgraph](https://www.pyqtgraph.org/); захват звука: [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch).
+- `SunoCheck.exe` включает эти библиотеки, Python и Qt под их собственными лицензиями (Qt и PySide6 — LGPL v3). Собрать exe с другими их версиями можно командой из раздела [Разработка](#разработка).
 
 SunoCheck не связан с Suno, Inc. Suno — товарный знак его владельца.

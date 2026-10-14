@@ -6,6 +6,21 @@
 
 <p align="center"><b>AI music detection</b> — spots Suno-generated music in whatever your computer is playing, and can skip it.</p>
 
+<p align="center">
+  <a href="https://github.com/moonzlo/SunoCheck/releases/latest"><img src="https://img.shields.io/github/v/release/moonzlo/SunoCheck?sort=semver&logo=github" alt="Latest release"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/releases"><img src="https://img.shields.io/github/downloads/moonzlo/SunoCheck/total?logo=github" alt="Downloads"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/moonzlo/SunoCheck/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI" alt="CI"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/moonzlo/SunoCheck/release.yml?logo=githubactions&logoColor=white&label=exe%20build" alt="Exe build"></a>
+  <a href="#verifying-the-exe"><img src="https://img.shields.io/badge/VirusTotal-every%20release-394EFF?logo=virustotal&logoColor=white" alt="VirusTotal"></a>
+  <a href="https://github.com/moonzlo/SunoCheck/attestations"><img src="https://img.shields.io/badge/build-attested-2EA44F?logo=githubactions&logoColor=white" alt="Build attestation"></a>
+  <br>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/moonzlo/SunoCheck" alt="MIT license"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+  <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv"></a>
+</p>
+
 <p align="center"><a href="README.md">Русский</a> · <b>English</b></p>
 
 ---
@@ -38,11 +53,19 @@ Track states: **Listening** → **Suspected** → **Suno**; a "Suno" verdict is 
 ## Requirements
 
 - Windows 10 or 11.
-- [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself).
+- Only to run from source: [uv](https://docs.astral.sh/uv/) (installs Python 3.12 by itself).
 - An output device at 44.1 or 48 kHz. The comb needs lines up to 15.8 kHz, so the app stops with an error below 33.2 kHz.
 - For track names and skipping: a player that reports what is playing to Windows (media session) and obeys media keys. Yandex Music, Spotify, browsers and most players do.
 
 ## Installation
+
+### Ready-made exe
+
+Download **[SunoCheck.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck.exe)** from the [latest release](https://github.com/moonzlo/SunoCheck/releases/latest), put it in any folder you can write to (for example `Documents\SunoCheck`) and run it. Nothing to install: the app keeps its data in a `data` folder next to the exe.
+
+The exe is not code-signed, so on first launch SmartScreen may say "Windows protected your PC": click "More info" → "Run anyway". You can check the file is genuine first, see [Verifying the exe](#verifying-the-exe).
+
+### From source
 
 ```powershell
 git clone https://github.com/moonzlo/SunoCheck.git
@@ -50,9 +73,30 @@ cd SunoCheck
 uv sync
 ```
 
+## Verifying the exe
+
+Every release is built by GitHub Actions from a tag of this repository ([release.yml](.github/workflows/release.yml)), not on anyone's machine. The build goes through three checks, all reported in the release notes:
+
+- **VirusTotal.** The exe is uploaded to [VirusTotal](https://www.virustotal.com/) before publishing; the release notes show the detection count and a link to the full report. If VirusTotal does not finish the analysis, the release is not published.
+- **SHA-256 checksum** in the release notes and in `SHA256SUMS.txt`. Compare it with the hash of your download:
+
+  ```powershell
+  (Get-FileHash .\SunoCheck.exe -Algorithm SHA256).Hash
+  ```
+
+- **Build attestation.** GitHub signs the link "file ↔ commit ↔ workflow". To verify (needs [GitHub CLI](https://cli.github.com/)):
+
+  ```powershell
+  gh attestation verify .\SunoCheck.exe --repo moonzlo/SunoCheck
+  ```
+
+Some antivirus engines occasionally flag PyInstaller-built programs because their unpacker resembles malware packers. If in doubt, run from source.
+
 ## Usage
 
 ### Window with charts
+
+Run `SunoCheck.exe` or, from source:
 
 ```powershell
 uv run sunocheck-gui
@@ -106,7 +150,7 @@ Saved immediately to `%APPDATA%\SunoCheck\settings.json`; only values that diffe
 
 ## Data
 
-`data/` is created in the folder you start the app from and stays on your machine.
+`data/` is created next to `SunoCheck.exe`, or, when running from source, in the folder you start the app from. It stays on your machine.
 
 | Path | Contents |
 |---|---|
@@ -142,8 +186,23 @@ This is an assistant, not forensic evidence: do not use its verdict against a sp
 ```powershell
 uv sync --all-groups      # + pytest, ruff and research dependencies
 uv run pytest             # pure-logic tests (decision, blacklist, settings, fakeprint)
-uv run ruff check src tests tools
+uv run ruff check src tests tools packaging .github/scripts
+uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck.exe
 ```
+
+Every push and pull request to `main` runs [CI](.github/workflows/ci.yml): lint, tests and an exe build (kept as an artifact for 14 days).
+
+Releasing:
+
+1. Bump `version` in `pyproject.toml` and move the `[Unreleased]` changes into a new `CHANGELOG.md` section.
+2. Commit and tag the same version:
+
+   ```powershell
+   git tag v0.2.0
+   git push origin main v0.2.0
+   ```
+
+[release.yml](.github/workflows/release.yml) checks the tag against the version and CHANGELOG, builds the exe, scans it on VirusTotal and publishes a release with notes from CHANGELOG.
 
 | Path | Contents |
 |---|---|
@@ -153,6 +212,8 @@ uv run ruff check src tests tools
 | `tools/` | GUI smoke test with screenshots, responsiveness probe, decision replay over recordings |
 | `research/` | detector research (in Russian) |
 | `docs/` | feature docs (in Russian) |
+| `packaging/` | exe build (PyInstaller) |
+| `.github/` | CI, release, VirusTotal and release-notes scripts |
 
 The code is functional: pure functions and frozen dataclasses, classes only for external systems (audio capture, media session, window). Errors are not masked by fallbacks; they stop with a clear message.
 
@@ -167,5 +228,6 @@ The code is functional: pure functions and frozen dataclasses, classes only for 
 - Fakeprint weights: [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector) by Matěj Štágl, MIT ([LICENSE-lofcz.txt](src/sunocheck/models/LICENSE-lofcz.txt)).
 - Research corpus: [Kukedlc/suno-ai-music-dataset](https://huggingface.co/datasets/Kukedlc/suno-ai-music-dataset), [FMA](https://github.com/mdeff/fma), [MTG-Jamendo](https://mtg.github.io/mtg-jamendo-dataset/).
 - UI: [PySide6](https://doc.qt.io/qtforpython-6/) (LGPL) and [pyqtgraph](https://www.pyqtgraph.org/); audio capture: [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch).
+- `SunoCheck.exe` bundles these libraries, Python and Qt under their own licenses (Qt and PySide6: LGPL v3). The [Development](#development) section shows how to build the exe with other versions of them.
 
 SunoCheck is not affiliated with Suno, Inc. Suno is a trademark of its owner.

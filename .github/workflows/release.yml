@@ -1,0 +1,88 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds SunoCheck.exe, attests it, scans it on VirusTotal and publishes a GitHub release.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tag matches pyproject and CHANGELOG
+        id: check
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The VirusTotal key is an environment secret: only this job sees it, never the build that runs third-party code.
+    environment: deploy
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: SunoCheck-exe
+          path: dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum SunoCheck.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/SunoCheck.exe
+
+      - name: VirusTotal scan
+        env:
+          VT_API_KEY: ${{ secrets.VIRUSTOTAL }}
+        run: python3 .github/scripts/virustotal_scan.py virustotal.json dist/SunoCheck.exe
+
+      - name: Release notes
+        run: python3 .github/scripts/release_notes.py CHANGELOG.md "$VERSION" "$GITHUB_REPOSITORY" virustotal.json notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/SunoCheck.exe dist/SHA256SUMS.txt
+          --repo "$GITHUB_REPOSITORY" --verify-tag --title "SunoCheck $VERSION" --notes-file notes.md
