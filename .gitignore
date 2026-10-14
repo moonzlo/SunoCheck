@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Personal data written by the app: recordings, session journals, labels, blacklist
+data/
+
+# Local audio samples and scratch work
+samples/
+tmp/
+
+# Research corpus, caches and third-party metadata (see research/README.md)
+research/data/
+research/cache/
+research/meta/
+research/*.log
+research/*.err
