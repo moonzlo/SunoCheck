@@ -16,7 +16,7 @@
   <br>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/moonzlo/SunoCheck" alt="MIT license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/moonzlo/SunoCheck?color=blue" alt="MIT license"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json" alt="uv"></a>
 </p>
