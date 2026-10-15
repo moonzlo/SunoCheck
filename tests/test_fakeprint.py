@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -19,7 +21,7 @@ from sunocheck.fakeprint import (
 
 
 @pytest.mark.parametrize("path", [DEFAULT_MODEL_PATH, SHIFTED_MODEL_PATH])
-def test_models_match_the_fakeprint_length(path: object) -> None:
+def test_models_match_the_fakeprint_length(path: Path) -> None:
     assert load_model(path).weights.shape == (BAND_BINS.size,)
 
 

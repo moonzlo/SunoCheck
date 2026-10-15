@@ -92,6 +92,8 @@ class MediaSessionWatcher:
         properties = _wait_result(
             session.try_get_media_properties_async(), "TryGetMediaPropertiesAsync", self._timeout_seconds, self._stop
         )
+        if properties is None:
+            return None
         return TrackInfo(app_id=session.source_app_user_model_id, artist=properties.artist, title=properties.title)
 
     def _run(self) -> None:
@@ -111,3 +113,6 @@ class MediaSessionWatcher:
             return
         except SmtcError as error:
             self.events.put(SessionUnavailable(str(error)))
+        except OSError as error:
+            # pywinrt raises OSError for a failed WinRT call, e.g. a session that closed while it was being read.
+            self.events.put(SessionUnavailable(f"WinRT call failed: {error}"))

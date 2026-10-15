@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 import numpy as np
 import pyqtgraph as pg
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QLibraryInfo, QLocale, QObject, Qt, QTimer, QTranslator, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -35,6 +35,7 @@ from PySide6.QtGui import (
     QPalette,
     QPen,
     QPixmap,
+    QShowEvent,
 )
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -66,6 +67,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sunocheck.app_log import LOG_NAME, install_exception_hooks, logger, setup_log_file
 from sunocheck.autostart import BACKGROUND_FLAG, autostart_command, read_autostart, write_autostart
 from sunocheck.blacklist import (
     BlacklistAction,
@@ -80,6 +82,7 @@ from sunocheck.coherent_comb import Checkpoint
 from sunocheck.decision import SHIFTED_LOGIT, STRONG_LOGIT, Phase
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, load_model
 from sunocheck.listener import (
+    CapturePaused,
     CaptureStarted,
     CaptureWarning,
     CombScored,
@@ -120,6 +123,7 @@ RECORDINGS_DIR: Path = DATA_DIR / "recordings"
 SESSIONS_DIR: Path = DATA_DIR / "sessions"
 LABELS_PATH: Path = DATA_DIR / "labels.csv"
 BLACKLIST_PATH: Path = DATA_DIR / "blacklist.csv"
+LOG_DIR: Path = DATA_DIR / "logs"
 
 EVENT_POLL_MS: int = 15
 MAX_LOG_LINES: int = 500
@@ -224,6 +228,10 @@ class LogoMissingError(FileNotFoundError):
     pass
 
 
+class TranslationMissingError(FileNotFoundError):
+    pass
+
+
 @dataclass(frozen=True)
 class WorkerFailed:
     details: str
@@ -312,7 +320,11 @@ def detection_reason(
 
 def issue_url(version: str, system: str, frozen: bool) -> str:
     build: str = "exe" if frozen else "из исходников"
-    body: str = f"Что произошло:\n\n\nЧто ожидалось:\n\n\n---\n{APP_NAME} {version} ({build}), {system}"
+    body: str = (
+        "Что произошло:\n\n\nЧто ожидалось:\n\n\n"
+        f"Журнал: приложите data/logs/{LOG_NAME} (меню «Файл» → «Открыть папку данных»).\n\n"
+        f"---\n{APP_NAME} {version} ({build}), {system}"
+    )
     return f"{ISSUES_URL}?{urlencode({'body': body})}"
 
 
@@ -351,6 +363,15 @@ def listen_for_instances(on_activate: Callable[[], None]) -> QLocalServer:
 
     server.newConnection.connect(accept)
     return server
+
+
+def install_qt_translation(app: QApplication) -> None:
+    """Standard Qt buttons (OK, Show Details...) in Russian, like the rest of the interface."""
+    translator = QTranslator(app)
+    folder: str = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+    if not translator.load(QLocale(QLocale.Language.Russian), "qtbase", "_", folder):
+        raise TranslationMissingError(f"qtbase_ru.qm not found in {folder}")
+    app.installTranslator(translator)
 
 
 def logo_pixmap() -> QPixmap:
@@ -418,6 +439,34 @@ class NotificationPopup(QFrame):
         self._on_click()
 
 
+class ErrorDialogs(QObject):
+    """Shows uncaught exceptions from any thread in the GUI thread (a queued signal for worker threads).
+    One dialog at a time: repeats while it is open only go to the log."""
+
+    raised = Signal(str)
+
+    def __init__(self, log_path: Path) -> None:
+        super().__init__()
+        self._log_path: Path = log_path
+        self._showing: bool = False
+        self.raised.connect(self._show)
+
+    @Slot(str)
+    def _show(self, details: str) -> None:
+        if self._showing:
+            return
+        self._showing = True
+        box = QMessageBox(
+            QMessageBox.Icon.Critical,
+            f"{APP_NAME}: ошибка",
+            f"Произошла ошибка. Подробности записаны в журнал:\n{self._log_path}\n\n"
+            "Если она повторяется, сообщите о ней: меню «Справка» → «Сообщить о проблеме».",
+        )
+        box.setDetailedText(details)
+        box.exec()
+        self._showing = False
+
+
 # ---------- workers ----------
 
 
@@ -469,6 +518,7 @@ class DetectorWindow(QMainWindow):
         self._track: TrackInfo | None = None
         self._track_max_score: float = float("-inf")
         self._score_points: list[ScorePoint] = []
+        self._last_evaluation: Evaluation | None = None
         self._score_span: float = 0.0
         self._comb_scores: list[tuple[Checkpoint, float]] = []
         self._last_reason: str = ""
@@ -565,7 +615,13 @@ class DetectorWindow(QMainWindow):
         self._record_check = QCheckBox("Сохранять записи треков (WAV)")
         self._record_check.setChecked(self._settings.record_audio)
         self._record_check.toggled.connect(self._on_setting_changed)
+        self._record_check.setToolTip("До «Буфер трека, с» секунд каждого трека в data/recordings — для «Сравнить метрики»")
         advanced_form.addRow(self._record_check)
+        self._session_log_check = QCheckBox("Сохранять журнал оценок (CSV)")
+        self._session_log_check.setChecked(self._settings.session_log_enabled)
+        self._session_log_check.toggled.connect(self._on_setting_changed)
+        self._session_log_check.setToolTip("Каждая оценка в data/sessions, около 9 МБ за час прослушивания")
+        advanced_form.addRow(self._session_log_check)
 
         toggle = QToolButton()
         toggle.setText("Дополнительно")
@@ -643,7 +699,7 @@ class DetectorWindow(QMainWindow):
             title="Гребёнка 200 Гц по растущему окну (красная точка — выше порога = Suno)"
         )
         self._comb_plot.setLabel("bottom", "секунд звука трека")
-        self._comb_plot.setXRange(0.0, COMB_CHECKPOINTS[-1].seconds + 2.5, padding=0)
+        self._comb_plot.getViewBox().setXRange(0.0, COMB_CHECKPOINTS[-1].seconds + 2.5, padding=0)
         self._comb_plot.setLabel("left", "дБ")
         self._comb_plot.setYRange(*COMB_AXIS)
         self._comb_plot.showGrid(x=True, y=True, alpha=0.2)
@@ -847,6 +903,7 @@ class DetectorWindow(QMainWindow):
             cooldown_seconds=value("cooldown_seconds"),
             rhythm_enabled=self._rhythm_check.isChecked(),
             record_audio=self._record_check.isChecked(),
+            session_log_enabled=self._session_log_check.isChecked(),
         )
 
     def _on_setting_changed(self) -> None:
@@ -896,7 +953,7 @@ class DetectorWindow(QMainWindow):
         self._start_button.setText("Стоп")
         self._tray_toggle.setText("Стоп")
         self._set_status("LISTEN")
-        self._append_log(f"старт, журнал оценок: {self._session_path}")
+        self._append_log(f"старт, журнал оценок: {self._session_path if self._settings.session_log_enabled else 'выключен'}")
 
     def _quit(self) -> None:
         self._quitting = True
@@ -947,7 +1004,17 @@ class DetectorWindow(QMainWindow):
         match event:
             case CaptureStarted(device_name=name, sample_rate=rate, channels=channels):
                 self._device_label.setText(f"{name}, {rate} Гц, {channels} кан.")
+                self._device_label.setStyleSheet("color: #757575;")
                 self._append_log(f"захват: {name}, {rate} Гц")
+            case CapturePaused(reason=reason):
+                self._device_label.setText("Звук не захватывается, жду другое устройство вывода")
+                self._device_label.setStyleSheet(f"color: {STATUS_COLORS['DETECTED']};")
+                self._append_log(f"ВНИМАНИЕ: устройство вывода по умолчанию не захватывается: {reason}")
+                self._notify(
+                    f"{APP_NAME} не слышит звук",
+                    "Устройство вывода по умолчанию не захватывается. Выберите другое — захват возобновится сам.",
+                    STATUS_COLORS["DETECTED"],
+                )
             case TrackChanged(track=track):
                 self._reset_track_view(track)
                 self._append_log(f"трек: {describe(track)}")
@@ -976,7 +1043,7 @@ class DetectorWindow(QMainWindow):
                 self._study_button.setText("Сравнить метрики")
                 self._append_log(report)
             case WorkerFailed(details=details):
-                self._append_log(details)
+                self._append_log(f"ОШИБКА детектора:\n{details}")
                 QMessageBox.critical(self, "Ошибка детектора", details)
             case WorkerStopped():
                 self._worker = None
@@ -999,16 +1066,12 @@ class DetectorWindow(QMainWindow):
         self._score_points.append(point)
         self._track_max_score = evaluation.max_score
         self._set_status(evaluation.phase.value)
-        self._fakeprint_reason.setText(fakeprint_text(point))
-        self._shifted_reason.setText(shifted_text(point))
-        self._draw_score_chart()
-        self._fakeprint_curve.setData(np.linspace(1.0, 8.0, evaluation.fakeprint.size), evaluation.fakeprint)
         self._spectrogram = scroll_spectrogram(self._spectrogram, evaluation.recent_residue)
-        self._spectrogram_image.setImage(self._spectrogram, levels=(0.0, 1.0), autoLevels=False)
-        self._show_values(self._spectral_values, SPECTRAL_FIELDS, evaluation.spectral)
-        if evaluation.rhythm is not None:
-            self._show_values(self._rhythm_values, RHYTHM_FIELDS, evaluation.rhythm)
-        if self._session_path is not None:
+        self._last_evaluation = evaluation
+        # Charts cost ~2 ms per evaluation; hidden in the tray nobody sees them, showEvent catches up.
+        if self.isVisible():
+            self._draw_evaluation(evaluation, point)
+        if self._session_path is not None and self._settings.session_log_enabled:
             append_csv_row(self._session_path, EVALUATION_HEADER, evaluation_row(evaluation, datetime.now()))
         if evaluation.phase is previous:
             return
@@ -1029,6 +1092,21 @@ class DetectorWindow(QMainWindow):
             if self._settings.mode is Mode.LOG:
                 self._notify(f"Похоже на Suno: {describe(evaluation.track)}", reason, STATUS_COLORS["DETECTED"])
 
+    def _draw_evaluation(self, evaluation: Evaluation, point: ScorePoint) -> None:
+        self._fakeprint_reason.setText(fakeprint_text(point))
+        self._shifted_reason.setText(shifted_text(point))
+        self._draw_score_chart()
+        self._fakeprint_curve.setData(np.linspace(1.0, 8.0, evaluation.fakeprint.size), evaluation.fakeprint)
+        self._spectrogram_image.setImage(self._spectrogram, levels=(0.0, 1.0), autoLevels=False)
+        self._show_values(self._spectral_values, SPECTRAL_FIELDS, evaluation.spectral)
+        if evaluation.rhythm is not None:
+            self._show_values(self._rhythm_values, RHYTHM_FIELDS, evaluation.rhythm)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if self._last_evaluation is not None and self._score_points:
+            self._draw_evaluation(self._last_evaluation, self._score_points[-1])
+
     def _on_comb(self, checkpoint: Checkpoint, score: float) -> None:
         self._comb_scores.append((checkpoint, score))
         self._comb_reason.setText(comb_text(self._comb_scores))
@@ -1039,6 +1117,7 @@ class DetectorWindow(QMainWindow):
         self._track = track
         self._track_max_score = float("-inf")
         self._score_points = []
+        self._last_evaluation = None
         self._comb_scores = []
         app: str = f"  [{track.app_id}]" if track is not None else ""
         self._track_label.setText(f"Трек: {describe(track)}{app}")
@@ -1138,7 +1217,7 @@ class DetectorWindow(QMainWindow):
         span: float = SCORE_SPAN_STEP_SECONDS * (math.floor((last_seconds + 5.0) / SCORE_SPAN_STEP_SECONDS) + 1)
         if span != self._score_span:
             self._score_span = span
-            self._score_plot.setXRange(0.0, span, padding=0)
+            self._score_plot.getViewBox().setXRange(0.0, span, padding=0)
         self._min_seconds_line.setValue(self._settings.min_seconds)
         self._score_curve.setData([p.seconds for p in points], [p.score for p in points])
         decided: list[ScorePoint] = [p for p in points if p.threshold != float("inf")]
@@ -1160,6 +1239,7 @@ class DetectorWindow(QMainWindow):
 
     def _append_log(self, message: str) -> None:
         self._log.appendPlainText(f"[{datetime.now():%H:%M:%S}] {message}")
+        logger.info(message)
 
 
 def configure_plots(app: QApplication) -> None:
@@ -1175,6 +1255,11 @@ def main() -> None:
     app = QApplication(sys.argv)
     if activate_running_instance():
         return
+    log_path: Path = setup_log_file(LOG_DIR)
+    error_dialogs = ErrorDialogs(log_path)
+    install_exception_hooks(error_dialogs.raised.emit)
+    install_qt_translation(app)
+    logger.info("%s %s (%s), %s", APP_NAME, APP_VERSION, "exe" if FROZEN else "source", platform.platform())
     installer_mutex: int = ctypes.windll.kernel32.CreateMutexW(None, False, INSTALLER_MUTEX)
     if not installer_mutex:
         raise ctypes.WinError()

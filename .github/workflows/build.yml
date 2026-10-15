@@ -26,6 +26,9 @@ jobs:
       - name: Lint
         run: uv run ruff check src tests tools packaging .github/scripts
 
+      - name: Type check
+        run: uv run pyright
+
       - name: Test
         run: uv run pytest -q
 

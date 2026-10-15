@@ -65,6 +65,9 @@ def main(path: Path, seconds: float, tab: int, popup: bool) -> None:
             self._index += 1
             return chunk
 
+        def is_active(self) -> bool:
+            return True
+
         def close(self) -> None:
             pass
 
@@ -101,7 +104,10 @@ def main(path: Path, seconds: float, tab: int, popup: bool) -> None:
     model = load_model(DEFAULT_MODEL_PATH)
     window = DetectorWindow(model, DEFAULT_SETTINGS)
     window.showMaximized()
-    window.findChild(QTabWidget).setCurrentIndex(tab)
+    tabs: QTabWidget | None = window.findChild(QTabWidget)
+    if tabs is None:
+        raise LookupError("DetectorWindow has no QTabWidget")
+    tabs.setCurrentIndex(tab)
     window._session_path = OUT_CSV
     if not popup:
         window._popup.notify = lambda title, body, color: None
@@ -148,7 +154,7 @@ def main(path: Path, seconds: float, tab: int, popup: bool) -> None:
     probe_timer.start(PROBE_MS)
     threading.Thread(target=run_listener, args=(config, queue.Queue(), model, emit, stop), daemon=True).start()
     app.exec()
-    OUT_CSV.unlink()
+    OUT_CSV.unlink(missing_ok=True)
 
     print(f"rate {rate}, {seconds:.0f} s")
     print("worker:")

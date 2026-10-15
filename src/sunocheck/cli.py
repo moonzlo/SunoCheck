@@ -11,6 +11,7 @@ from sunocheck.blacklist import BlacklistAction, BlacklistSource, blacklist_entr
 from sunocheck.coherent_comb import CHECKPOINTS, Checkpoint, check_sample_rate, comb_score
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, ai_probability, load_model
 from sunocheck.listener import (
+    CapturePaused,
     CaptureStarted,
     CaptureWarning,
     CombScored,
@@ -26,7 +27,7 @@ from sunocheck.listener import (
     describe,
     run_listener,
 )
-from sunocheck.media_session import artist_key
+from sunocheck.media_session import TrackInfo, artist_key
 from sunocheck.settings import DEFAULT_SETTINGS, AppSettings, to_listen_config
 from sunocheck.study import Label, LabeledAudio, labeled_recordings, study_report
 
@@ -76,6 +77,8 @@ def format_event(event: ListenerEvent) -> str | None:
     match event:
         case CaptureStarted(device_name=name, sample_rate=rate, channels=channels):
             return f"capture started: '{name}', {rate} Hz, {channels} ch"
+        case CapturePaused(reason=reason):
+            return f"PAUSED   default output cannot be captured, waiting for another one: {reason}"
         case TrackChanged(track=track):
             return f"TRACK {describe(track)}"
         case TrackReset(reason=reason):
@@ -173,6 +176,7 @@ def main() -> None:
         cooldown_seconds=args.cooldown,
         rhythm_enabled=args.rhythm,
         record_audio=args.record,
+        session_log_enabled=DEFAULT_SETTINGS.session_log_enabled,
         notifications_enabled=DEFAULT_SETTINGS.notifications_enabled,
         listen_on_launch=DEFAULT_SETTINGS.listen_on_launch,
     )
@@ -181,16 +185,14 @@ def main() -> None:
 
     def on_event(event: ListenerEvent) -> None:
         print_event(event)
-        match event:
-            case SkipPerformed(track=track) if track is None or not artist_key(track.artist):
-                print("BLACKLIST skipped track has no artist: not added", flush=True)
-            case SkipPerformed(track=track) if change_blacklist(
-                BLACKLIST_PATH, track.artist, track.title, BlacklistAction.ADD, BlacklistSource.SKIP, datetime.now()
-            ):
-                print(f"BLACKLIST + {track.artist}", flush=True)
-                updates.put(replace(config, blacklist=frozenset(blacklist_entries(BLACKLIST_PATH))))
-            case _:
-                pass
+        if not isinstance(event, SkipPerformed):
+            return
+        track: TrackInfo | None = event.track
+        if track is None or not artist_key(track.artist):
+            print("BLACKLIST skipped track has no artist: not added", flush=True)
+        elif change_blacklist(BLACKLIST_PATH, track.artist, track.title, BlacklistAction.ADD, BlacklistSource.SKIP, datetime.now()):
+            print(f"BLACKLIST + {track.artist}", flush=True)
+            updates.put(replace(config, blacklist=frozenset(blacklist_entries(BLACKLIST_PATH))))
 
     run_listener(config, updates, model, on_event, threading.Event())
 

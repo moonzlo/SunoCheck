@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pyaudiowpatch as pyaudio
+from winrt.windows.media.devices import AudioDeviceRole, MediaDevice
 
 from sunocheck.fakeprint import FloatArray
 
@@ -29,6 +30,12 @@ def _default_loopback_device(pa: pyaudio.PyAudio) -> dict[str, str | int | float
         if str(speakers["name"]) in str(loopback["name"]):
             return loopback
     raise LoopbackDeviceNotFoundError(f"No WASAPI loopback device for default output '{speakers['name']}'")
+
+
+def default_output_id() -> str:
+    """Endpoint id of the default output; changes when the user switches outputs or unplugs the current one.
+    A loopback stream stays on the device it was opened on, so the caller reopens capture on a change."""
+    return MediaDevice.get_default_audio_render_id(AudioDeviceRole.DEFAULT)
 
 
 class LoopbackCapture:
@@ -74,6 +81,10 @@ class LoopbackCapture:
             return None
         frames: FloatArray = np.frombuffer(data, dtype=np.float32).reshape(-1, self._channels)
         return frames.mean(axis=1)
+
+    def is_active(self) -> bool:
+        """False once PortAudio has stopped the stream, e.g. after the device was invalidated."""
+        return self._stream is not None and self._stream.is_active()
 
     def close(self) -> None:
         if self._stream is not None:

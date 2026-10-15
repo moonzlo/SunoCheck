@@ -140,7 +140,7 @@ def rhythm_metrics(audio: FloatArray, sample_rate: int) -> RhythmMetrics | None:
         return None
 
     local: FloatVector = np.asarray(local_bpms)
-    peaks: FloatVector = (onset_times(envelope.full, frame_rate) * frame_rate).astype(np.int64)
+    peaks: NDArray[np.int64] = (onset_times(envelope.full, frame_rate) * frame_rate).astype(np.int64)
     attack_total: float = float(envelope.full[peaks].sum())
     return RhythmMetrics(
         bpm=bpm,

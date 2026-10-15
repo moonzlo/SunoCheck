@@ -108,18 +108,20 @@ uv run sunocheck-gui
 
 Press **Старт** (Start) and play music. Closing the window keeps the app in the tray: click the icon to open the panel, right-click for the menu (mode, labels, notifications, exit). The dot on the icon shows the status: green — listening, yellow — suspected, red — Suno, blue — silence, grey — stopped. SunoCheck runs as a single instance: launching it again opens the running window.
 
+Audio comes from the default output device. Switch between headphones and speakers and capture follows the new device. If the device cannot be captured (for example, a headset in call mode at 16 kHz), a notification and the line under the level meter say so; capture resumes once you pick another device.
+
 Window menu:
 
 - **Файл** (File) — open the data folder, exit (Ctrl+Q).
 - **Настройки** (Settings) — app behaviour, see [Settings](#settings).
-- **Справка** (Help) — how it works, check for updates (opens the releases page; the app itself never goes online), report a problem (GitHub Issues with the app version), message the author on Telegram, about.
+- **Справка** (Help) — how it works, check for updates (opens the releases page; the app itself never goes online), report a problem (GitHub Issues with the app version; attach the log `data/logs/sunocheck.log`), message the author on Telegram, about.
 
 Mode, in the «Распознавание» (Detection) group on the left:
 
 - **Только отмечать** (log only, default) — a notification with the reason.
 - **Скипать** (skip) — the app presses the "next track" media key.
 
-The **«Это ИИ» / «Это человек»** (AI / human) buttons store your label for the current track. Labels feed the metric comparison and drive the blacklist.
+The **«Это ИИ» / «Это человек»** (AI / human) buttons store your label for the current track. Labels feed the metric comparison (it also needs track recordings, turned on under «Дополнительно», Advanced) and drive the blacklist.
 
 ### Console
 
@@ -166,7 +168,8 @@ The **Распознавание** (Detection) group on the left — how to look
 | Silence threshold, dBFS | −50 | Quieter is silence |
 | Silence = new track, s | 0.4 | Gap that starts a new track |
 | Pause after skip, s | 3 | Audio ignored after a skip |
-| Save track recordings (WAV) | on | Last seconds of each track are kept for review |
+| Save track recordings (WAV) | off | Up to "track buffer" seconds of each track in `data/recordings`, for the metric comparison. Records any audio, calls and videos included |
+| Save the evaluation log (CSV) | off | Every evaluation in `data/sessions`, about 9 MB per hour of listening |
 
 ## Data
 
@@ -174,8 +177,9 @@ The **Распознавание** (Detection) group on the left — how to look
 
 | Path | Contents |
 |---|---|
-| `data/recordings/` | WAV of the last seconds of each track (turn off with "Save track recordings") |
-| `data/sessions/` | CSV of every evaluation: detector scores, thresholds, status |
+| `data/logs/` | App and error log `sunocheck.log`, at most 4 MB: old parts are removed automatically. Attach it to a problem report |
+| `data/recordings/` | WAV of each track, when "Save track recordings" is on |
+| `data/sessions/` | CSV of every evaluation (detector scores, thresholds, status), when "Save the evaluation log" is on |
 | `data/labels.csv` | Your AI / human labels |
 | `data/blacklist.csv` | Blacklist journal |
 
@@ -207,11 +211,12 @@ This is an assistant, not forensic evidence: do not use its verdict against a sp
 uv sync --all-groups      # + pytest, ruff and research dependencies
 uv run pytest             # pure-logic tests (decision, blacklist, settings, fakeprint)
 uv run ruff check src tests tools packaging .github/scripts
+uv run pyright
 uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck-Portable.exe and dist\SunoCheck\
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$(uv version --short)" packaging\sunocheck.iss   # dist\SunoCheck-Setup.exe
 ```
 
-Every push and pull request to `main` runs [CI](.github/workflows/ci.yml): lint, tests, installer and portable exe builds (kept as an artifact for 14 days).
+Every push and pull request to `main` runs [CI](.github/workflows/ci.yml): lint, type check, tests, installer and portable exe builds (kept as an artifact for 14 days).
 
 Releasing:
 

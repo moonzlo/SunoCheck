@@ -67,7 +67,9 @@ def main(out: Path) -> None:
     events.append(SkipPerformed(track))
     for event in events:
         window._handle_event(event)
-    tabs: QTabWidget = window.findChild(QTabWidget)
+    tabs: QTabWidget | None = window.findChild(QTabWidget)
+    if tabs is None:
+        raise LookupError("DetectorWindow has no QTabWidget")
 
     def shoot() -> None:
         window.grab().save(str(out / "gui_detectors.png"))

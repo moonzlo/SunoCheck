@@ -25,6 +25,7 @@ class AppSettings:
     cooldown_seconds: float
     rhythm_enabled: bool
     record_audio: bool
+    session_log_enabled: bool
     notifications_enabled: bool
     listen_on_launch: bool
 
@@ -40,7 +41,10 @@ DEFAULT_SETTINGS = AppSettings(
     silence_gap_seconds=0.4,
     cooldown_seconds=3.0,
     rhythm_enabled=True,
-    record_audio=True,
+    # Off for users: recordings keep up to max_seconds of whatever plays (calls and videos too), the session
+    # log grows ~9 MB per hour of listening. Both are research tools.
+    record_audio=False,
+    session_log_enabled=False,
     notifications_enabled=True,
     listen_on_launch=False,
 )
@@ -71,6 +75,7 @@ def load_settings(path: Path) -> AppSettings:
         cooldown_seconds=float(merged["cooldown_seconds"]),
         rhythm_enabled=bool(merged["rhythm_enabled"]),
         record_audio=bool(merged["record_audio"]),
+        session_log_enabled=bool(merged["session_log_enabled"]),
         notifications_enabled=bool(merged["notifications_enabled"]),
         listen_on_launch=bool(merged["listen_on_launch"]),
     )

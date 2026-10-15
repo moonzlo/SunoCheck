@@ -16,6 +16,7 @@ def test_issue_url_prefills_version_and_build() -> None:
     assert f"{parts.scheme}://{parts.netloc}{parts.path}" == ISSUES_URL
     body: str = parse_qs(parts.query)["body"][0]
     assert body.endswith("SunoCheck 1.2.3 (exe), Windows-11-10.0.28000-SP0")
+    assert "data/logs/sunocheck.log" in body
 
 
 def test_about_shows_version_and_contacts() -> None:

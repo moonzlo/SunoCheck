@@ -19,10 +19,11 @@ import soundfile as sf
 import soxr
 from numpy.typing import NDArray
 
-from sunocheck.capture import CaptureFormat, LoopbackCapture
+from sunocheck.capture import CaptureFormat, LoopbackCapture, LoopbackDeviceNotFoundError, default_output_id
 from sunocheck.coherent_comb import (
     Checkpoint,
     CombState,
+    SampleRateTooLowError,
     add_comb_score,
     check_sample_rate,
     comb_audio,
@@ -62,6 +63,9 @@ RECORDING_MIN_SECONDS: float = 8.0
 SESSION_POLL_SECONDS: float = 1.0
 SESSION_TIMEOUT_SECONDS: float = 5.0
 NO_SIGNAL_DBFS: float = -120.0
+DEVICE_POLL_SECONDS: float = 1.0
+# Opening PortAudio takes ~50 ms; while no output can be captured, retry at this pace.
+REOPEN_SECONDS: float = 5.0
 
 
 class Mode(StrEnum):
@@ -109,6 +113,20 @@ class CaptureStarted:
     device_name: str
     sample_rate: int
     channels: int
+
+
+@dataclass(frozen=True)
+class CapturePaused:
+    """The default output cannot be captured; capture reopens when the output changes or on the next retry."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class ActiveCapture:
+    capture: LoopbackCapture
+    rate: int
+    resampler: soxr.ResampleStream
 
 
 @dataclass(frozen=True)
@@ -178,6 +196,7 @@ class CaptureWarning:
 
 ListenerEvent = (
     CaptureStarted
+    | CapturePaused
     | TrackChanged
     | TrackReset
     | LevelUpdate
@@ -334,6 +353,21 @@ def evaluate(
     return evaluation, evidence
 
 
+def open_capture() -> tuple[ActiveCapture, CaptureStarted] | CapturePaused:
+    """Loopback of the current default output, or why it cannot be captured (no loopback, too low a rate,
+    a PortAudio error) so the loop can wait for another output instead of stopping."""
+    capture = LoopbackCapture(chunk_seconds=CHUNK_SECONDS)
+    try:
+        capture_format: CaptureFormat = capture.start()
+        check_sample_rate(capture_format.sample_rate)
+    except (LoopbackDeviceNotFoundError, SampleRateTooLowError, OSError) as error:
+        capture.close()
+        return CapturePaused(str(error))
+    rate: int = capture_format.sample_rate
+    resampler = soxr.ResampleStream(rate, MODEL_SAMPLE_RATE, 1, dtype="float32", quality="HQ")
+    return ActiveCapture(capture, rate, resampler), CaptureStarted(capture_format.device_name, rate, capture_format.channels)
+
+
 def run_listener(
     initial_config: ListenConfig,
     config_updates: "queue.Queue[ListenConfig]",
@@ -341,18 +375,16 @@ def run_listener(
     emit: Emit,
     stop: threading.Event,
 ) -> None:
-    capture = LoopbackCapture(chunk_seconds=CHUNK_SECONDS)
-    capture_format: CaptureFormat = capture.start()
-    rate: int = capture_format.sample_rate
-    check_sample_rate(rate)
-    emit(CaptureStarted(capture_format.device_name, rate, capture_format.channels))
-    resampler = soxr.ResampleStream(rate, MODEL_SAMPLE_RATE, 1, dtype="float32", quality="HQ")
-
     session_watcher = MediaSessionWatcher(poll_seconds=SESSION_POLL_SECONDS, timeout_seconds=SESSION_TIMEOUT_SECONDS)
     session_watcher.start()
 
     config: ListenConfig = initial_config
     track: TrackState = new_track(None, 0)
+    active: ActiveCapture | None = None
+    paused: CapturePaused | None = None
+    device_id: str | None = None
+    next_device_check: float = 0.0
+    next_open_attempt: float = 0.0
     silence_run_seconds: float = 0.0
     ignore_until: float = 0.0
     reported_overflows: int = 0
@@ -377,7 +409,9 @@ def run_listener(
             while not session_watcher.events.empty():
                 match session_watcher.events.get_nowait():
                     case SessionUpdate(track=current) if current != track.info:
-                        finish_track(track, config, rate, emit)
+                        # Without a capture the track holds no audio: it was finished when the capture closed.
+                        if active is not None:
+                            finish_track(track, config, active.rate, emit)
                         track = new_track(current, track.serial + 1)
                         emit(TrackChanged(current))
                     case SessionUpdate():
@@ -385,11 +419,43 @@ def run_listener(
                     case SessionUnavailable(message=message):
                         emit(CaptureWarning(f"media session unavailable, track boundaries by silence only: {message}"))
 
-            if capture.overflow_count != reported_overflows:
-                reported_overflows = capture.overflow_count
+            if now >= next_device_check:
+                next_device_check = now + DEVICE_POLL_SECONDS
+                current_device: str = default_output_id()
+                device_changed: bool = current_device != device_id
+                stream_lost: bool = active is not None and not active.capture.is_active()
+                retry_due: bool = active is None and now >= next_open_attempt
+                if device_changed or stream_lost or retry_due:
+                    if active is not None:
+                        active.capture.close()
+                        finish_track(track, config, active.rate, emit)
+                        track = new_track(track.info, track.serial + 1)
+                        emit(TrackReset("output device changed" if device_changed else "capture stream stopped"))
+                    device_id = current_device
+                    next_open_attempt = now + REOPEN_SECONDS
+                    reported_overflows = 0
+                    silence_run_seconds = 0.0
+                    match open_capture():
+                        case (ActiveCapture() as opened, CaptureStarted() as started):
+                            active, paused = opened, None
+                            emit(started)
+                        case CapturePaused() as failure:
+                            active = None
+                            if failure != paused:
+                                emit(failure)
+                            paused = failure
+
+            if active is None:
+                emit(LevelUpdate(NO_SIGNAL_DBFS))
+                stop.wait(DEVICE_POLL_SECONDS)
+                continue
+            rate: int = active.rate
+
+            if active.capture.overflow_count != reported_overflows:
+                reported_overflows = active.capture.overflow_count
                 emit(CaptureWarning(f"capture overflow #{reported_overflows}: audio was dropped"))
 
-            chunk: FloatArray | None = capture.read(timeout_s=READ_TIMEOUT_SECONDS)
+            chunk: FloatArray | None = active.capture.read(timeout_s=READ_TIMEOUT_SECONDS)
             level: float = NO_SIGNAL_DBFS if chunk is None else rms_dbfs(chunk)
             emit(LevelUpdate(level))
             if now < ignore_until:
@@ -406,7 +472,7 @@ def run_listener(
                 emit(TrackReset("silence"))
             if chunk is None:
                 continue
-            chunk_model_rate: FloatArray = resampler.resample_chunk(chunk)
+            chunk_model_rate: FloatArray = active.resampler.resample_chunk(chunk)
             if level < config.silence_db or chunk_model_rate.size == 0:
                 continue
 
@@ -443,5 +509,6 @@ def run_listener(
     finally:
         comb_pool.shutdown(wait=False, cancel_futures=True)
         session_watcher.stop()
-        capture.close()
-        finish_track(track, config, rate, emit)
+        if active is not None:
+            active.capture.close()
+            finish_track(track, config, active.rate, emit)
