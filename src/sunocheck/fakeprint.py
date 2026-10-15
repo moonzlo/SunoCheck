@@ -37,6 +37,9 @@ BAND_BINS: NDArray[np.intp] = np.flatnonzero((_FREQS >= FREQ_MIN_HZ) & (_FREQS <
 SHIFT_SEMITONES: tuple[int, ...] = (1, 2, 3)
 # Live evasions were off the exact ratio by up to 0.04 % (resampling between 44.1 and 48 kHz).
 SHIFT_TOLERANCE: NDArray[np.float64] = np.exp(np.arange(-2, 3) * 0.0002)
+# Semitone lock (research H21): 0.2-2 % off the exact undo the restored peaks miss the shifted weights, so shifted
+# Suno scores far above its neighbors there; humans score alike along r.
+LOCK_NEIGHBORS: NDArray[np.float64] = np.exp(np.concatenate((np.arange(-100, -9, 5), np.arange(10, 101, 5))) * 0.0002)
 # Lowest r = f_observed / f_original the stream can undo, with a margin below 3 semitones down.
 STREAM_MIN_RATIO: float = 0.8
 STREAM_BINS: NDArray[np.intp] = np.flatnonzero((_FREQS >= FREQ_MIN_HZ * STREAM_MIN_RATIO) & (_FREQS <= FREQ_MAX_HZ))
@@ -166,11 +169,28 @@ def stream_fakeprint(stream: SpectrumStream) -> FloatArray:
     return fakeprint_from_stream_band(stream_mean_db(stream))
 
 
-def stream_shifted_score(stream: SpectrumStream, model: FakeprintModel) -> float:
-    """Best logit of the shifted-Suno model over SHIFT_SEMITONES pitch-down undos of the running mean spectrum."""
-    ratios: NDArray[np.float64] = np.outer(2.0 ** (-np.array(SHIFT_SEMITONES, dtype=np.float64) / 12), SHIFT_TOLERANCE).ravel()
-    fakeprints: FloatArray = fakeprint_from_band(warped_bands(stream_mean_db(stream), ratios))
-    return float((fakeprints @ model.weights).max()) + model.bias
+@dataclass(frozen=True)
+class ShiftedScore:
+    """`lock_contrast`: `score` minus the best logit at LOCK_NEIGHBORS of the winning semitone; None when skipped."""
+
+    score: float
+    lock_contrast: float | None
+
+
+def stream_shifted_score(stream: SpectrumStream, model: FakeprintModel, lock_min_score: float) -> ShiftedScore:
+    """Best logit of the shifted-Suno model over SHIFT_SEMITONES pitch-down undos of the running mean spectrum.
+
+    The lock contrast costs 2.5x the score, so it is only computed once the score reaches `lock_min_score`."""
+    mean_db: NDArray[np.float64] = stream_mean_db(stream)
+    exact: NDArray[np.float64] = 2.0 ** (-np.array(SHIFT_SEMITONES, dtype=np.float64) / 12)
+    ratios: NDArray[np.float64] = np.outer(exact, SHIFT_TOLERANCE)
+    scores: FloatArray = (fakeprint_from_band(warped_bands(mean_db, ratios.ravel())) @ model.weights).reshape(ratios.shape)
+    semitone, _ = np.unravel_index(np.argmax(scores), scores.shape)
+    score: float = float(scores.max()) + model.bias
+    if score < lock_min_score:
+        return ShiftedScore(score=score, lock_contrast=None)
+    neighbors: FloatArray = fakeprint_from_band(warped_bands(mean_db, exact[semitone] * LOCK_NEIGHBORS)) @ model.weights
+    return ShiftedScore(score=score, lock_contrast=score - float(neighbors.max()) - model.bias)
 
 
 def ai_probability(mono: FloatArray, sample_rate: int, model: FakeprintModel) -> float:

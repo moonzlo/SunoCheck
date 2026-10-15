@@ -11,7 +11,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from sunocheck.decision import DecisionConfig, Phase, initial_evidence, score_threshold, update_evidence
+from sunocheck.decision import DecisionConfig, Phase, initial_evidence, lock_min_score, score_threshold, update_evidence
 from sunocheck.fakeprint import (
     DEFAULT_MODEL_PATH,
     MODEL_SAMPLE_RATE,
@@ -49,10 +49,10 @@ def main(paths: list[Path]) -> None:
             if not stream.frames or seconds < DEFAULT_SETTINGS.min_seconds:
                 continue
             score = score_from_fakeprint(stream_fakeprint(stream), model)
-            shifted = stream_shifted_score(stream, shifted_model)
+            shifted = stream_shifted_score(stream, shifted_model, lock_min_score(config.threshold_offset))
             buffered = min(seconds, DEFAULT_SETTINGS.max_seconds)
             evidence = update_evidence(evidence, score, shifted, score_threshold(buffered, config.threshold_offset), seconds, config)
-            best, best_shifted = max(best, score), max(best_shifted, shifted)
+            best, best_shifted = max(best, score), max(best_shifted, shifted.score)
             if evidence.phase is Phase.DETECTED and detected_at is None:
                 detected_at = seconds
         when = "-" if detected_at is None else f"{detected_at:.1f}s"

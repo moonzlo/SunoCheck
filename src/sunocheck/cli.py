@@ -185,7 +185,7 @@ def main() -> None:
 
     def on_event(event: ListenerEvent) -> None:
         print_event(event)
-        if not isinstance(event, SkipPerformed):
+        if not isinstance(event, SkipPerformed) or config.mode is not Mode.SKIP_AND_BLACKLIST:
             return
         track: TrackInfo | None = event.track
         if track is None or not artist_key(track.artist):

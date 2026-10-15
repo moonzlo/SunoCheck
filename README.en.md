@@ -44,7 +44,7 @@ Suno's neural decoder leaves traces that a live recording does not have. SunoChe
 |---|---|---|
 | **Fakeprint** | Narrow peaks in the 1–8 kHz mean spectrum; logistic regression over 3585 features, weights from [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector) | The logit stays ≥ +10 for 1 s. Above the threshold curve but below +10 only means "suspected" |
 | **200 Hz comb** | Suno decodes in 5 ms frames, which leaves phase-stable lines at exactly k·200 Hz. One long FFT over the first 2.5–45 s of audio makes them narrow and tall | Line contrast exceeds the threshold at any checkpoint |
-| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s |
+| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s, or a score ≥ +2 peaks sharply at the exact semitone (at least 5 lower 0.2–2 % off it) |
 
 The [artist blacklist](#artist-blacklist) works on top of the audio detectors.
 
@@ -120,6 +120,7 @@ Mode, in the «Распознавание» (Detection) group on the left:
 
 - **Только отмечать** (log only, default) — a notification with the reason.
 - **Скипать** (skip) — the app presses the "next track" media key.
+- **Скипать и добавлять автора в ЧС** (skip and blacklist) — the same, and the skipped track's artist goes straight to the [blacklist](#artist-blacklist), so their next tracks are skipped from the first second.
 
 The **«Это ИИ» / «Это человек»** (AI / human) buttons store your label for the current track. Labels feed the metric comparison (it also needs track recordings, turned on under «Дополнительно», Advanced) and drive the blacklist.
 
@@ -127,7 +128,7 @@ The **«Это ИИ» / «Это человек»** (AI / human) buttons store y
 
 ```powershell
 uv run sunocheck listen               # listen and print decisions
-uv run sunocheck listen --mode skip   # listen and skip
+uv run sunocheck listen --mode skip   # listen, skip and blacklist the artist (skip_only — no blacklist)
 uv run sunocheck analyze <files or folders>   # score audio files
 uv run sunocheck --help
 ```
@@ -136,8 +137,8 @@ uv run sunocheck --help
 
 Many generator "factories" publish dozens of tracks made the same way, some with hidden artifacts that take 10–45 s to catch by sound. The blacklist only needs to catch an artist once.
 
-- **Added** when one of their tracks is marked with «Это ИИ» or «Автора — в чёрный список» (blacklist the artist), or when the app has skipped it.
-- **Effect:** a track by a blacklisted artist is flagged on its first evaluation (about 1 s) and skipped in skip mode.
+- **Added** when one of their tracks is marked with «Это ИИ» or «Автора — в чёрный список» (blacklist the artist), or when the app has skipped it in the skip-and-blacklist mode.
+- **Effect:** a track by a blacklisted artist is flagged on its first evaluation (about 1 s) and skipped in both skip modes.
 - **Removed** with «Это человек» on any of their tracks, or with «Убрать из списка» on the blacklist tab.
 - **Guard:** right after a skip the blacklist does not fire while the player still reports the skipped track, so late metadata cannot skip the next track by someone else.
 
@@ -159,7 +160,7 @@ The **Распознавание** (Detection) group on the left — how to look
 
 | Setting | Default | Meaning |
 |---|---|---|
-| On Suno detection | log only | or skip |
+| On Suno detection | log only | or skip, or skip and blacklist the artist |
 | Threshold offset | 0 | Positive is stricter: fewer false positives, later detection |
 | Confirmation, s | 1 | How long a confident score must hold |
 | First evaluation after, s | 1 | Audio needed before the first evaluation |
@@ -193,7 +194,7 @@ Research corpus: 280 Suno v2–v5.5 tracks and 722 human tracks from FMA and MTG
 | 200 Hz comb, 10 s | original | 1.000 | 1.00 | 0.96 |
 | 200 Hz comb, 10 s | AAC 128 | 0.999 | 0.99 | 0.91 |
 
-Live thresholds are stricter than in the table: flagging a real artist is worse than a miss. A Suno track is usually detected in 5–20 s, a blacklisted artist in about 1 s, a pitch-shifted track in up to 45 s.
+Live thresholds are stricter than in the table: flagging a real artist is worse than a miss. A Suno track is usually detected in 5–20 s, a blacklisted artist in about 1 s, a pitch-shifted track usually in 8–13 s.
 
 Limitations:
 

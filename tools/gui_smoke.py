@@ -17,11 +17,12 @@ from sunocheck import gui
 from sunocheck.coherent_comb import CHECKPOINTS
 from sunocheck.decision import Phase
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, load_model
-from sunocheck.gui import DetectorWindow, configure_plots
+from sunocheck.gui import DetectorWindow
 from sunocheck.listener import CaptureStarted, CombScored, Evaluation, LevelUpdate, SkipPerformed, TrackChanged
 from sunocheck.media_session import TrackInfo
 from sunocheck.settings import DEFAULT_SETTINGS
 from sunocheck.spectral_metrics import SpectralMetrics
+from sunocheck.theme import apply_theme
 
 
 def main(out: Path) -> None:
@@ -29,7 +30,7 @@ def main(out: Path) -> None:
     gui.BLACKLIST_PATH = Path(tempfile.mkdtemp(prefix="sunocheck_smoke_")) / "blacklist.csv"
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    configure_plots(app)
+    apply_theme(app)
     window = DetectorWindow(load_model(DEFAULT_MODEL_PATH), DEFAULT_SETTINGS)
     window.show()
     track = TrackInfo(app_id="Yandex.Music", artist="SUDO", title="Тонкий Чек")
@@ -48,6 +49,7 @@ def main(out: Path) -> None:
                 phase=phase,
                 score=score,
                 shifted_score=score - 5.0,
+                lock_contrast=None,
                 threshold=threshold,
                 max_score=score,
                 track_seconds=seconds,

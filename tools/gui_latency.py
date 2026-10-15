@@ -23,10 +23,11 @@ from PySide6.QtWidgets import QApplication, QTabWidget
 import sunocheck.listener as listener
 from sunocheck.capture import CaptureFormat
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, load_model
-from sunocheck.gui import RECORDINGS_DIR, DetectorWindow, GuiEvent, configure_plots
+from sunocheck.gui import RECORDINGS_DIR, DetectorWindow, GuiEvent
 from sunocheck.listener import CHUNK_SECONDS, Evaluation, ListenerEvent, run_listener
 from sunocheck.media_session import SessionUpdate, TrackInfo
 from sunocheck.settings import DEFAULT_SETTINGS, to_listen_config
+from sunocheck.theme import apply_theme
 
 PROBE_MS: int = 5
 OUT_CSV: Path = Path(__file__).parent / "latency_session.csv"
@@ -100,7 +101,7 @@ def main(path: Path, seconds: float, tab: int, popup: bool) -> None:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
-    configure_plots(app)
+    apply_theme(app)
     model = load_model(DEFAULT_MODEL_PATH)
     window = DetectorWindow(model, DEFAULT_SETTINGS)
     window.showMaximized()

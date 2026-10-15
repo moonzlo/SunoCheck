@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import numpy as np
@@ -44,4 +45,13 @@ def test_shifted_score_runs_on_a_stream() -> None:
     noise = rng.normal(0.0, 0.1, size=3 * MODEL_SAMPLE_RATE).astype(np.float32)
     stream = push_samples(empty_stream(), noise, 60 * MODEL_SAMPLE_RATE // STREAM_HOP)
     assert stream_mean_db(stream).shape == (STREAM_BINS.size,)
-    assert np.isfinite(stream_shifted_score(stream, load_model(SHIFTED_MODEL_PATH)))
+    shifted = stream_shifted_score(stream, load_model(SHIFTED_MODEL_PATH), -math.inf)
+    assert np.isfinite(shifted.score)
+    assert shifted.lock_contrast is not None and np.isfinite(shifted.lock_contrast)
+
+
+def test_lock_contrast_is_skipped_below_the_min_score() -> None:
+    rng = np.random.default_rng(1)
+    noise = rng.normal(0.0, 0.1, size=3 * MODEL_SAMPLE_RATE).astype(np.float32)
+    stream = push_samples(empty_stream(), noise, 60 * MODEL_SAMPLE_RATE // STREAM_HOP)
+    assert stream_shifted_score(stream, load_model(SHIFTED_MODEL_PATH), math.inf).lock_contrast is None

@@ -34,13 +34,14 @@ from sunocheck.coherent_comb import (
     last_comb_score,
     push_comb_audio,
 )
-from sunocheck.decision import DecisionConfig, Evidence, Phase, initial_evidence, score_threshold, update_evidence
+from sunocheck.decision import DecisionConfig, Evidence, Phase, initial_evidence, lock_min_score, score_threshold, update_evidence
 from sunocheck.fakeprint import (
     MODEL_SAMPLE_RATE,
     SHIFTED_MODEL_PATH,
     STREAM_HOP,
     FakeprintModel,
     FloatArray,
+    ShiftedScore,
     SpectrumStream,
     empty_stream,
     load_model,
@@ -70,7 +71,12 @@ REOPEN_SECONDS: float = 5.0
 
 class Mode(StrEnum):
     LOG = "log"
-    SKIP = "skip"
+    SKIP = "skip_only"
+    # "skip" kept its stored value: before 0.3 the only skip mode also blacklisted the author, so old settings keep that.
+    SKIP_AND_BLACKLIST = "skip"
+
+
+SKIP_MODES: frozenset[Mode] = frozenset({Mode.SKIP, Mode.SKIP_AND_BLACKLIST})
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,7 @@ class Evaluation:
     phase: Phase
     score: float
     shifted_score: float
+    lock_contrast: float | None
     threshold: float
     max_score: float
     track_seconds: float
@@ -325,11 +332,11 @@ def evaluate(
 ) -> tuple[Evaluation, Evidence]:
     fakeprint: FloatArray = stream_fakeprint(track.spectrum)
     score: float = score_from_fakeprint(fakeprint, model)
-    shifted_score: float = stream_shifted_score(track.spectrum, shifted_model)
+    shifted: ShiftedScore = stream_shifted_score(track.spectrum, shifted_model, lock_min_score(config.decision.threshold_offset))
     buffered_seconds: float = track.samples / MODEL_SAMPLE_RATE
     track_seconds: float = track.total_samples / MODEL_SAMPLE_RATE
     threshold: float = score_threshold(buffered_seconds, config.decision.threshold_offset)
-    evidence: Evidence = update_evidence(track.evidence, score, shifted_score, threshold, track_seconds, config.decision)
+    evidence: Evidence = update_evidence(track.evidence, score, shifted, threshold, track_seconds, config.decision)
     blacklisted: bool = is_blacklisted(track, config, skipped)
     if comb_detected(track.comb) or blacklisted:
         evidence = Evidence(phase=Phase.DETECTED, strong_since=evidence.strong_since)
@@ -337,7 +344,8 @@ def evaluate(
         track=track.info,
         phase=evidence.phase,
         score=score,
-        shifted_score=shifted_score,
+        shifted_score=shifted.score,
+        lock_contrast=shifted.lock_contrast,
         threshold=threshold,
         max_score=max(track.max_score, score),
         track_seconds=track_seconds,
@@ -499,7 +507,7 @@ def run_listener(
             )
             emit(evaluation)
 
-            if evaluation.phase is Phase.DETECTED and not was_detected and config.mode is Mode.SKIP:
+            if evaluation.phase is Phase.DETECTED and not was_detected and config.mode in SKIP_MODES:
                 press_next_track()
                 skipped = track.info
                 emit(SkipPerformed(track.info))

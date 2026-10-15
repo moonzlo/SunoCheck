@@ -31,6 +31,7 @@ EVALUATION_HEADER: tuple[str, ...] = (
     "coherent_comb_detected",
     "shifted_score",
     "blacklisted",
+    "lock_contrast",
 )
 LABEL_HEADER: tuple[str, ...] = ("time", "app", "artist", "title", "label", "max_score")
 
@@ -77,6 +78,7 @@ def evaluation_row(evaluation: Evaluation, now: datetime) -> tuple[str, ...]:
         str(int(evaluation.comb_detected)),
         f"{evaluation.shifted_score:.3f}",
         str(int(evaluation.blacklisted)),
+        "" if evaluation.lock_contrast is None else f"{evaluation.lock_contrast:.3f}",
     )
 
 

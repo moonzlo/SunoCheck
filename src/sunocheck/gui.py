@@ -28,11 +28,12 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QDesktopServices,
+    QGradient,
     QIcon,
     QKeySequence,
+    QLinearGradient,
     QMouseEvent,
     QPainter,
-    QPalette,
     QPen,
     QPixmap,
     QShowEvent,
@@ -47,7 +48,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
+    QStyledItemDelegate,
     QSystemTrayIcon,
     QTabWidget,
     QToolButton,
@@ -79,7 +80,7 @@ from sunocheck.blacklist import (
 )
 from sunocheck.coherent_comb import CHECKPOINTS as COMB_CHECKPOINTS
 from sunocheck.coherent_comb import Checkpoint
-from sunocheck.decision import SHIFTED_LOGIT, STRONG_LOGIT, Phase
+from sunocheck.decision import LOCK_CONTRAST, LOCK_LOGIT, SHIFTED_LOGIT, STRONG_LOGIT, Phase
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, load_model
 from sunocheck.listener import (
     CapturePaused,
@@ -104,6 +105,19 @@ from sunocheck.session_log import EVALUATION_HEADER, LABEL_HEADER, append_csv_ro
 from sunocheck.settings import SETTINGS_PATH, AppSettings, load_settings, save_settings, to_listen_config
 from sunocheck.spectral_metrics import SpectralMetrics
 from sunocheck.study import LabeledAudio, StudyInputError, labeled_recordings, study_report
+from sunocheck.theme import (
+    ACCENT_CYAN,
+    ACCENT_VIOLET,
+    CARD_PADDING,
+    FORM_COLUMN_SPACING,
+    FORM_ROW_SPACING,
+    GAP,
+    OUTER_MARGIN,
+    TEXT_SECONDARY,
+    apply_theme,
+    apply_window_backdrop,
+    mica_supported,
+)
 
 APP_ID: str = "SunoCheck"
 APP_NAME: str = "SunoCheck"
@@ -139,6 +153,12 @@ INSTALLER_MUTEX: str = "SunoCheckRunning"
 ASFW_ANY: int = -1
 ABOUT_LOGO_PX: int = 96
 HEADER_CONTROL_HEIGHT: int = 36
+SIDE_PANEL_WIDTH: int = 360
+ADVANCED_INDENT: int = 20
+# The stylesheet padding of a spin box moves its frame, not the text of the inner line edit.
+SPIN_TEXT_INDENT: int = 8
+STATUS_BADGE_WIDTH: int = 150
+STATUS_BADGE_HEIGHT: int = 64
 SCORE_AXIS: tuple[float, float] = (-40.0, 10.0)
 COMB_AXIS: tuple[float, float] = (-10.0, 4.0)
 SPECTROGRAM_COLUMNS: int = 600
@@ -151,11 +171,11 @@ SPECTROGRAM_LUT: NDArray[np.uint8] = np.stack(
 ).astype(np.uint8)
 
 STATUS_COLORS: dict[str, str] = {
-    "STOPPED": "#616161",
-    "LISTEN": "#2e7d32",
-    "HOLD": "#f9a825",
-    "DETECTED": "#c62828",
-    "SILENCE": "#1565c0",
+    "STOPPED": "#52525b",
+    "LISTEN": "#22a06b",
+    "HOLD": "#d97706",
+    "DETECTED": "#e5484d",
+    "SILENCE": "#3b82f6",
 }
 STATUS_TEXT: dict[str, str] = {
     "STOPPED": "Остановлен",
@@ -164,7 +184,7 @@ STATUS_TEXT: dict[str, str] = {
     "DETECTED": "Suno",
     "SILENCE": "Тишина",
 }
-PHASE_COLORS: dict[Phase, str] = {Phase.LISTEN: "#2e7d32", Phase.HOLD: "#f9a825", Phase.DETECTED: "#c62828"}
+PHASE_COLORS: dict[Phase, str] = {phase: STATUS_COLORS[phase.value] for phase in (Phase.LISTEN, Phase.HOLD, Phase.DETECTED)}
 BLACKLIST_SOURCE_TEXT: dict[BlacklistSource, str] = {
     BlacklistSource.BUTTON: "кнопка «В чёрный список»",
     BlacklistSource.AI_LABEL: "кнопка «Это ИИ»",
@@ -172,8 +192,11 @@ BLACKLIST_SOURCE_TEXT: dict[BlacklistSource, str] = {
     BlacklistSource.HUMAN_LABEL: "кнопка «Это человек»",
     BlacklistSource.REMOVE_BUTTON: "кнопка «Убрать из списка»",
 }
-COMB_HIT_COLOR: str = "#c62828"
-COMB_MISS_COLOR: str = "#9e9e9e"
+COMB_HIT_COLOR: str = STATUS_COLORS["DETECTED"]
+COMB_MISS_COLOR: str = TEXT_SECONDARY
+VERDICT_BORDER_ALPHA: int = 120
+PLOT_GRID_ALPHA: float = 0.12
+SCORE_FILL_ALPHA: int = 70
 
 
 @dataclass(frozen=True)
@@ -197,7 +220,11 @@ NUMERIC_FIELDS: tuple[NumericField, ...] = (
     NumericField("silence_gap_seconds", "Тишина = новый трек, с", 0.1, 5, 0.1, False, True),
     NumericField("cooldown_seconds", "Пауза после скипа, с", 0, 10, 1, False, True),
 )
-MODE_CHOICES: tuple[tuple[Mode, str], ...] = ((Mode.LOG, "Только отмечать"), (Mode.SKIP, "Скипать (следующий трек)"))
+MODE_CHOICES: tuple[tuple[Mode, str], ...] = (
+    (Mode.LOG, "Только отмечать"),
+    (Mode.SKIP, "Скипать (следующий трек)"),
+    (Mode.SKIP_AND_BLACKLIST, "Скипать и добавлять автора в ЧС"),
+)
 
 RHYTHM_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("bpm", "Темп, BPM", "{:.1f}"),
@@ -255,6 +282,7 @@ class ScorePoint:
     seconds: float
     score: float
     shifted_score: float
+    lock_contrast: float | None
     threshold: float
     phase: Phase
 
@@ -287,7 +315,12 @@ def fakeprint_text(point: ScorePoint | None) -> str:
 def shifted_text(point: ScorePoint | None) -> str:
     if point is None:
         return "Suno с пониженным тоном: нет данных"
-    return f"Suno с пониженным тоном: балл {point.shifted_score:+.1f} (порог {SHIFTED_LOGIT:+.0f})"
+    lock: str = (
+        ""
+        if point.lock_contrast is None
+        else f"; пик ровно на полутоне {point.lock_contrast:+.1f} (порог {LOCK_CONTRAST:+.0f} при балле от {LOCK_LOGIT:+.0f})"
+    )
+    return f"Suno с пониженным тоном: балл {point.shifted_score:+.1f} (порог {SHIFTED_LOGIT:+.0f}){lock}"
 
 
 def comb_text(scores: list[tuple[Checkpoint, float]]) -> str:
@@ -391,6 +424,38 @@ def status_icon(color: str) -> QIcon:
     painter.drawEllipse(36, 36, 26, 26)
     painter.end()
     return QIcon(pixmap)
+
+
+def card_form(parent: QWidget) -> QFormLayout:
+    """Form inside a QGroupBox card: the title space on top comes from the stylesheet padding."""
+    form = QFormLayout(parent)
+    form.setContentsMargins(CARD_PADDING, 0, CARD_PADDING, CARD_PADDING)
+    form.setHorizontalSpacing(FORM_COLUMN_SPACING)
+    form.setVerticalSpacing(FORM_ROW_SPACING)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return form
+
+
+def card_column(parent: QWidget, top: int) -> QVBoxLayout:
+    """Column inside a card: top is 0 under a QGroupBox title, CARD_PADDING otherwise."""
+    column = QVBoxLayout(parent)
+    column.setContentsMargins(CARD_PADDING, top, CARD_PADDING, CARD_PADDING)
+    column.setSpacing(GAP)
+    return column
+
+
+def score_fill_gradient() -> QLinearGradient:
+    """Accent fading out towards the axis floor. ObjectMode spans the filled area in item (data) coordinates,
+    where 1.0 is the highest score, so the gradient follows the data range without recomputing."""
+    gradient = QLinearGradient(0.0, 0.0, 0.0, 1.0)
+    gradient.setCoordinateMode(QGradient.CoordinateMode.ObjectMode)
+    top = QColor(ACCENT_CYAN)
+    top.setAlpha(SCORE_FILL_ALPHA)
+    floor = QColor(ACCENT_CYAN)
+    floor.setAlpha(0)
+    gradient.setColorAt(0.0, floor)
+    gradient.setColorAt(1.0, top)
+    return gradient
 
 
 # ---------- notification ----------
@@ -528,6 +593,12 @@ class DetectorWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} — {APP_TAGLINE}")
         self.setWindowIcon(QIcon(logo_pixmap()))
         self.resize(1180, 780)
+        mica: bool = mica_supported()
+        if mica:
+            # Must be set before the native window exists; the Mica backdrop then shows through unpainted areas.
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setStyleSheet("QMainWindow { background: transparent; }")
+        apply_window_backdrop(int(self.winId()), mica)
         self._build_layout()
         self._build_menu()
         self._show_blacklist()
@@ -545,8 +616,12 @@ class DetectorWindow(QMainWindow):
     def _build_layout(self) -> None:
         central = QWidget()
         root = QHBoxLayout(central)
+        # The menu bar already leaves space above, so the top margin is a single gap.
+        root.setContentsMargins(OUTER_MARGIN, GAP // 2, OUTER_MARGIN, OUTER_MARGIN)
+        root.setSpacing(GAP)
         root.addWidget(self._build_side_panel())
         main = QVBoxLayout()
+        main.setSpacing(GAP)
         main.addWidget(self._build_verdict_card())
         main.addWidget(self._build_tabs(), stretch=1)
         root.addLayout(main, stretch=1)
@@ -554,56 +629,86 @@ class DetectorWindow(QMainWindow):
 
     def _build_verdict_card(self) -> QFrame:
         card = QFrame()
-        card.setFrameShape(QFrame.Shape.StyledPanel)
-        grid = QGridLayout(card)
-        self._start_button = QPushButton("Старт")
-        self._start_button.setFixedSize(110, HEADER_CONTROL_HEIGHT)
-        self._start_button.clicked.connect(self._toggle)
-        grid.addWidget(self._start_button, 0, 0, 4, 1, Qt.AlignmentFlag.AlignVCenter)
+        card.setObjectName("card")
+        self._verdict_card: QFrame = card
+        row = QHBoxLayout(card)
+        row.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
+        row.setSpacing(CARD_PADDING + 4)
         self._status_label = QLabel()
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_label.setFixedSize(120, HEADER_CONTROL_HEIGHT)
-        grid.addWidget(self._status_label, 0, 1, 4, 1, Qt.AlignmentFlag.AlignVCenter)
-        self._track_label = QLabel("Трек: -")
-        self._track_label.setStyleSheet("font-size: 15px; font-weight: bold;")
+        self._status_label.setFixedSize(STATUS_BADGE_WIDTH, STATUS_BADGE_HEIGHT)
+        row.addWidget(self._status_label, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        info = QVBoxLayout()
+        info.setSpacing(2)
+        caption = QLabel("Сейчас играет")
+        caption.setObjectName("caption")
+        info.addWidget(caption)
+        self._track_label = QLabel("-")
+        self._track_label.setObjectName("trackTitle")
+        info.addWidget(self._track_label)
+        info.addSpacing(4)
         self._fakeprint_reason = QLabel()
         self._shifted_reason = QLabel()
         self._comb_reason = QLabel()
-        for row, label in enumerate((self._track_label, self._fakeprint_reason, self._shifted_reason, self._comb_reason)):
-            grid.addWidget(label, row, 2)
+        for label in (self._fakeprint_reason, self._shifted_reason, self._comb_reason):
+            label.setObjectName("secondary")
+            info.addWidget(label)
+        row.addLayout(info, stretch=1)
+
+        side = QVBoxLayout()
+        side.setSpacing(6)
+        self._start_button = QPushButton("Старт")
+        self._start_button.setObjectName("primary")
+        self._start_button.setFixedSize(150, HEADER_CONTROL_HEIGHT)
+        self._start_button.clicked.connect(self._toggle)
+        side.addWidget(self._start_button, alignment=Qt.AlignmentFlag.AlignRight)
+        side.addStretch(1)
         self._level = QProgressBar()
         self._level.setRange(0, int(-LEVEL_FLOOR_DB))
         self._level.setTextVisible(False)
-        self._level.setMaximumWidth(180)
-        grid.addWidget(self._level, 0, 3)
+        self._level.setFixedWidth(220)
+        side.addWidget(self._level, alignment=Qt.AlignmentFlag.AlignRight)
         self._counters = QLabel()
-        grid.addWidget(self._counters, 1, 3)
+        side.addWidget(self._counters, alignment=Qt.AlignmentFlag.AlignRight)
         self._device_label = QLabel("Устройство: -")
-        self._device_label.setStyleSheet("color: #757575;")
-        grid.addWidget(self._device_label, 2, 3)
-        grid.setColumnStretch(2, 1)
+        self._device_label.setObjectName("secondary")
+        side.addWidget(self._device_label, alignment=Qt.AlignmentFlag.AlignRight)
+        row.addLayout(side)
         return card
 
     def _build_side_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setFixedWidth(340)
+        panel.setFixedWidth(SIDE_PANEL_WIDTH)
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(GAP)
 
         settings_box = QGroupBox("Распознавание")
-        form = QFormLayout(settings_box)
+        form = card_form(settings_box)
         self._mode_box = QComboBox()
+        # The default combo delegate ignores ::item stylesheet rules and draws a focus frame.
+        self._mode_box.setItemDelegate(QStyledItemDelegate(self._mode_box))
         for mode, title in MODE_CHOICES:
             self._mode_box.addItem(title, mode.value)
         self._mode_box.setCurrentIndex([m for m, _ in MODE_CHOICES].index(self._settings.mode))
         self._mode_box.currentIndexChanged.connect(self._on_setting_changed)
-        form.addRow(QLabel("При обнаружении Suno"))
+        mode_title = QLabel("При обнаружении Suno")
+        mode_title.setObjectName("section")
+        form.addRow(mode_title)
         form.addRow(self._mode_box)
-        form.addRow(QLabel("Fakeprint"))
+        fakeprint_title = QLabel("Fakeprint")
+        fakeprint_title.setObjectName("section")
+        form.addRow(fakeprint_title)
 
         self._numeric_inputs: dict[str, QSpinBox | QDoubleSpinBox] = {}
         advanced = QWidget()
         advanced_form = QFormLayout(advanced)
-        advanced_form.setContentsMargins(0, 0, 0, 0)
+        # Indented under the toggle text, so the advanced fields read as a nested group.
+        advanced_form.setContentsMargins(ADVANCED_INDENT, FORM_ROW_SPACING // 2, 0, FORM_ROW_SPACING // 2)
+        advanced_form.setHorizontalSpacing(FORM_COLUMN_SPACING)
+        advanced_form.setVerticalSpacing(FORM_ROW_SPACING)
+        advanced_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for field in NUMERIC_FIELDS:
             spin: QSpinBox | QDoubleSpinBox = self._numeric_input(field)
             self._numeric_inputs[field.key] = spin
@@ -639,12 +744,14 @@ class DetectorWindow(QMainWindow):
         form.addRow(advanced)
         path_label = QLabel("Настройки сохраняются сразу")
         path_label.setToolTip(str(SETTINGS_PATH))
-        path_label.setStyleSheet("color: #9e9e9e;")
+        path_label.setObjectName("caption")
         form.addRow(path_label)
-        layout.addWidget(settings_box)
+        # The settings card takes the spare height, so both columns end on the same line as the tabs.
+        layout.addWidget(settings_box, stretch=1)
 
         label_box = QGroupBox("Разметка текущего трека")
-        label_layout = QVBoxLayout(label_box)
+        label_layout = card_column(label_box, 0)
+        label_layout.setSpacing(FORM_ROW_SPACING - 4)
         for title, label in (("Это ИИ", "ai"), ("Это человек", "human")):
             button = QPushButton(title)
             button.clicked.connect(lambda _checked=False, value=label: self._label_track(value))
@@ -656,7 +763,6 @@ class DetectorWindow(QMainWindow):
         )
         label_layout.addWidget(blacklist_button)
         layout.addWidget(label_box)
-        layout.addStretch(1)
         return panel
 
     def _numeric_input(self, field: NumericField) -> QSpinBox | QDoubleSpinBox:
@@ -666,6 +772,7 @@ class DetectorWindow(QMainWindow):
             spin_int.setRange(int(field.minimum), int(field.maximum))
             spin_int.setValue(int(value))
             spin_int.valueChanged.connect(self._on_setting_changed)
+            spin_int.lineEdit().setTextMargins(SPIN_TEXT_INDENT, 0, 0, 0)
             return spin_int
         spin = QDoubleSpinBox()
         spin.setDecimals(3)
@@ -673,25 +780,28 @@ class DetectorWindow(QMainWindow):
         spin.setSingleStep(field.step)
         spin.setValue(value)
         spin.valueChanged.connect(self._on_setting_changed)
+        spin.lineEdit().setTextMargins(SPIN_TEXT_INDENT, 0, 0, 0)
         return spin
 
     def _build_tabs(self) -> QTabWidget:
         tabs = QTabWidget()
 
         detectors = QWidget()
-        detectors_layout = QVBoxLayout(detectors)
+        detectors_layout = card_column(detectors, CARD_PADDING)
         self._score_plot = pg.PlotWidget(title="Fakeprint: балл Suno по треку (красная линия — порог)")
         self._score_plot.setLabel("bottom", "время трека, с")
         self._score_plot.setYRange(*SCORE_AXIS)
-        self._score_plot.showGrid(x=True, y=True, alpha=0.2)
-        self._score_curve = self._score_plot.plot(pen=pg.mkPen(self.palette().color(QPalette.ColorRole.Text), width=2))
-        self._threshold_curve = self._score_plot.plot(pen=pg.mkPen("#c62828", width=1, style=Qt.PenStyle.DashLine))
+        self._score_plot.showGrid(x=True, y=True, alpha=PLOT_GRID_ALPHA)
+        self._score_curve = self._score_plot.plot(
+            pen=pg.mkPen(ACCENT_CYAN, width=2), fillLevel=SCORE_AXIS[0], fillBrush=QBrush(score_fill_gradient())
+        )
+        self._threshold_curve = self._score_plot.plot(pen=pg.mkPen(COMB_HIT_COLOR, width=1, style=Qt.PenStyle.DashLine))
         for curve in (self._score_curve, self._threshold_curve):
             curve.setDownsampling(auto=True, method="peak")
             curve.setClipToView(True)
         self._score_marker = pg.ScatterPlotItem(size=12)
         self._score_plot.addItem(self._score_marker)
-        self._min_seconds_line = pg.InfiniteLine(angle=90, pen=pg.mkPen("#9e9e9e", style=Qt.PenStyle.DotLine))
+        self._min_seconds_line = pg.InfiniteLine(angle=90, pen=pg.mkPen(TEXT_SECONDARY, style=Qt.PenStyle.DotLine))
         self._score_plot.addItem(self._min_seconds_line)
         detectors_layout.addWidget(self._score_plot, stretch=3)
 
@@ -702,24 +812,24 @@ class DetectorWindow(QMainWindow):
         self._comb_plot.getViewBox().setXRange(0.0, COMB_CHECKPOINTS[-1].seconds + 2.5, padding=0)
         self._comb_plot.setLabel("left", "дБ")
         self._comb_plot.setYRange(*COMB_AXIS)
-        self._comb_plot.showGrid(x=True, y=True, alpha=0.2)
+        self._comb_plot.showGrid(x=True, y=True, alpha=PLOT_GRID_ALPHA)
         self._comb_plot.plot(
             [c.seconds for c in COMB_CHECKPOINTS],
             [c.threshold_db for c in COMB_CHECKPOINTS],
-            pen=pg.mkPen("#c62828", style=Qt.PenStyle.DashLine),
+            pen=pg.mkPen(COMB_HIT_COLOR, style=Qt.PenStyle.DashLine),
         )
-        self._comb_curve = self._comb_plot.plot(pen=pg.mkPen("#bdbdbd", width=1))
+        self._comb_curve = self._comb_plot.plot(pen=pg.mkPen(TEXT_SECONDARY, width=1))
         self._comb_points = pg.ScatterPlotItem(size=12)
         self._comb_plot.addItem(self._comb_points)
         detectors_layout.addWidget(self._comb_plot, stretch=2)
         tabs.addTab(detectors, "Детекторы")
 
         spectrum = QWidget()
-        spectrum_layout = QVBoxLayout(spectrum)
+        spectrum_layout = card_column(spectrum, CARD_PADDING)
         self._fakeprint_plot = pg.PlotWidget(title="Отпечаток: спектральные пики 1–8 кГц (у Suno — регулярная «гребёнка»)")
         self._fakeprint_plot.setLabel("bottom", "кГц")
         self._fakeprint_plot.setYRange(0.0, 1.0)
-        self._fakeprint_curve = self._fakeprint_plot.plot(pen=pg.mkPen("#6a1b9a", width=1))
+        self._fakeprint_curve = self._fakeprint_plot.plot(pen=pg.mkPen(ACCENT_VIOLET, width=1))
         spectrum_layout.addWidget(self._fakeprint_plot)
         self._spectrogram_plot = pg.PlotWidget(title="Остаточная спектрограмма 1–8 кГц (артефакты — ровные горизонтальные линии), время →")
         self._spectrogram_plot.hideAxis("left")
@@ -732,25 +842,27 @@ class DetectorWindow(QMainWindow):
 
         experiments = QWidget()
         experiments_layout = QHBoxLayout(experiments)
+        experiments_layout.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
+        experiments_layout.setSpacing(GAP)
         self._rhythm_values = self._value_box(experiments_layout, "Ритм (не влияет на скип)", RHYTHM_FIELDS)
         self._spectral_values = self._value_box(experiments_layout, "Пики fakeprint (не влияют на скип)", SPECTRAL_FIELDS)
         study_box = QGroupBox("Сравнение метрик")
-        study_layout = QVBoxLayout(study_box)
+        study_layout = card_column(study_box, 0)
         study_layout.addWidget(QLabel("AUROC метрик по data/recordings\nи разметке labels.csv"))
         self._study_button = QPushButton("Сравнить метрики")
         self._study_button.clicked.connect(self._start_study)
         study_layout.addWidget(self._study_button)
         study_layout.addStretch(1)
-        experiments_layout.addWidget(study_box)
+        experiments_layout.addWidget(study_box, alignment=Qt.AlignmentFlag.AlignTop)
         experiments_layout.addStretch(1)
         tabs.addTab(experiments, "Эксперименты")
 
         blacklist = QWidget()
-        blacklist_layout = QVBoxLayout(blacklist)
+        blacklist_layout = card_column(blacklist, CARD_PADDING)
         hint = QLabel(
             "Автор попадает сюда, если его трек помечен кнопкой «Это ИИ» или «Автора — в чёрный список», "
-            "либо приложение само скипнуло его трек. Треки автора из списка отмечаются с первой секунды, "
-            "в режиме скипа — скипаются. «Это человек» на треке автора убирает его из списка."
+            "либо приложение скипнуло его трек в режиме «Скипать и добавлять автора в ЧС». Треки автора из списка "
+            "отмечаются с первой секунды, в режимах скипа — скипаются. «Это человек» на треке автора убирает его из списка."
         )
         hint.setWordWrap(True)
         blacklist_layout.addWidget(hint)
@@ -766,12 +878,14 @@ class DetectorWindow(QMainWindow):
         self._log.setReadOnly(True)
         self._log.setMaximumBlockCount(MAX_LOG_LINES)
         self._log.setStyleSheet("font-family: Consolas; font-size: 12px;")
-        tabs.addTab(self._log, "Журнал")
+        log_page = QWidget()
+        card_column(log_page, CARD_PADDING).addWidget(self._log)
+        tabs.addTab(log_page, "Журнал")
         return tabs
 
     def _value_box(self, layout: QHBoxLayout, title: str, fields: tuple[tuple[str, str, str], ...]) -> dict[str, QLabel]:
         box = QGroupBox(title)
-        form = QFormLayout(box)
+        form = card_form(box)
         values: dict[str, QLabel] = {}
         for key, label, _ in fields:
             value = QLabel("—")
@@ -1004,7 +1118,7 @@ class DetectorWindow(QMainWindow):
         match event:
             case CaptureStarted(device_name=name, sample_rate=rate, channels=channels):
                 self._device_label.setText(f"{name}, {rate} Гц, {channels} кан.")
-                self._device_label.setStyleSheet("color: #757575;")
+                self._device_label.setStyleSheet("")
                 self._append_log(f"захват: {name}, {rate} Гц")
             case CapturePaused(reason=reason):
                 self._device_label.setText("Звук не захватывается, жду другое устройство вывода")
@@ -1033,7 +1147,8 @@ class DetectorWindow(QMainWindow):
                 self._update_counters()
                 self._append_log(f">>> СКИП: {describe(track)}")
                 self._notify(f"Пропущен Suno: {describe(track)}", self._last_reason, STATUS_COLORS["DETECTED"])
-                self._blacklist_track(track, BlacklistAction.ADD, BlacklistSource.SKIP)
+                if self._settings.mode is Mode.SKIP_AND_BLACKLIST:
+                    self._blacklist_track(track, BlacklistAction.ADD, BlacklistSource.SKIP)
             case RecordingSaved(path=path):
                 self._append_log(f"запись: {path.name}")
             case CaptureWarning(message=message):
@@ -1060,6 +1175,7 @@ class DetectorWindow(QMainWindow):
             evaluation.track_seconds,
             evaluation.score,
             evaluation.shifted_score,
+            evaluation.lock_contrast,
             evaluation.threshold,
             evaluation.phase,
         )
@@ -1119,8 +1235,8 @@ class DetectorWindow(QMainWindow):
         self._score_points = []
         self._last_evaluation = None
         self._comb_scores = []
-        app: str = f"  [{track.app_id}]" if track is not None else ""
-        self._track_label.setText(f"Трек: {describe(track)}{app}")
+        app: str = f"  ·  {track.app_id}" if track is not None else ""
+        self._track_label.setText(f"{describe(track)}{app}")
         self._tray.setToolTip(f"{APP_NAME}: {STATUS_TEXT[self._status]}\n{describe(track)}")
         self._fakeprint_reason.setText(fakeprint_text(None))
         self._shifted_reason.setText(shifted_text(None))
@@ -1195,7 +1311,11 @@ class DetectorWindow(QMainWindow):
         self._status = status
         self._status_label.setText(STATUS_TEXT[status])
         self._status_label.setStyleSheet(
-            f"background: {STATUS_COLORS[status]}; color: white; font-size: 14px; font-weight: bold; border-radius: 4px;"
+            f"background: {STATUS_COLORS[status]}; color: white; font-size: 20px; font-weight: 700; border-radius: 12px;"
+        )
+        color = QColor(STATUS_COLORS[status])
+        self._verdict_card.setStyleSheet(
+            f"QFrame#card {{ border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, {VERDICT_BORDER_ALPHA}); }}"
         )
         self._tray.setIcon(status_icon(STATUS_COLORS[status]))
         self._tray.setToolTip(f"{APP_NAME}: {STATUS_TEXT[status]}\n{describe(self._track)}")
@@ -1242,14 +1362,6 @@ class DetectorWindow(QMainWindow):
         logger.info(message)
 
 
-def configure_plots(app: QApplication) -> None:
-    """Charts follow the system light/dark palette; must run before any plot widget is created."""
-    palette: QPalette = app.palette()
-    pg.setConfigOptions(
-        antialias=True, background=palette.color(QPalette.ColorRole.Base), foreground=palette.color(QPalette.ColorRole.Text)
-    )
-
-
 def main() -> None:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     app = QApplication(sys.argv)
@@ -1268,7 +1380,7 @@ def main() -> None:
     app.setQuitOnLastWindowClosed(False)
     if not QSystemTrayIcon.isSystemTrayAvailable():
         raise TrayUnavailableError("System tray is not available; the background mode needs it")
-    configure_plots(app)
+    apply_theme(app)
     settings: AppSettings = load_settings(SETTINGS_PATH)
     window = DetectorWindow(load_model(DEFAULT_MODEL_PATH), settings)
     server: QLocalServer = listen_for_instances(window._show_window)
