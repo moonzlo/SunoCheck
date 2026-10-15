@@ -173,6 +173,8 @@ def main() -> None:
         cooldown_seconds=args.cooldown,
         rhythm_enabled=args.rhythm,
         record_audio=args.record,
+        notifications_enabled=DEFAULT_SETTINGS.notifications_enabled,
+        listen_on_launch=DEFAULT_SETTINGS.listen_on_launch,
     )
     config: ListenConfig = to_listen_config(settings, RECORDINGS_DIR, frozenset(blacklist_entries(BLACKLIST_PATH)))
     updates: queue.Queue[ListenConfig] = queue.Queue()
