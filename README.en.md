@@ -59,11 +59,15 @@ Track states: **Listening** → **Suspected** → **Suno**; a "Suno" verdict is 
 
 ## Installation
 
-### Ready-made exe
+### Installer (recommended)
 
-Download **[SunoCheck.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck.exe)** from the [latest release](https://github.com/moonzlo/SunoCheck/releases/latest), put it in any folder you can write to (for example `Documents\SunoCheck`) and run it. Nothing to install: the app keeps its data in a `data` folder next to the exe.
+Download **[SunoCheck-Setup.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck-Setup.exe)** from the [latest release](https://github.com/moonzlo/SunoCheck/releases/latest) and run it. No admin rights needed: the app goes to `%LOCALAPPDATA%\Programs\SunoCheck`, gets a Start menu shortcut and is removed via Settings → Apps. To update, install the new version over the old one: settings, data and the blacklist are kept.
 
-The exe is not code-signed, so on first launch SmartScreen may say "Windows protected your PC": click "More info" → "Run anyway". You can check the file is genuine first, see [Verifying the exe](#verifying-the-exe).
+### Portable
+
+**[SunoCheck-Portable.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck-Portable.exe)** is a single file, nothing to install. Put it in a folder you can write to (for example `Documents\SunoCheck`): the app keeps its data in a `data` folder next to it. Every start takes 10–20 s because the file unpacks itself into a temporary folder; the installed version starts in a couple of seconds.
+
+The files are not code-signed, so on first launch SmartScreen may say "Windows protected your PC": click "More info" → "Run anyway". You can check the file is genuine first, see [Verifying the exe](#verifying-the-exe).
 
 ### From source
 
@@ -77,17 +81,17 @@ uv sync
 
 Every release is built by GitHub Actions from a tag of this repository ([release.yml](.github/workflows/release.yml)), not on anyone's machine. The build goes through three checks, all reported in the release notes:
 
-- **VirusTotal.** The exe is uploaded to [VirusTotal](https://www.virustotal.com/) before publishing; the release notes show the detection count and a link to the full report. If VirusTotal does not finish the analysis, the release is not published.
+- **VirusTotal.** The installer and the portable exe are uploaded to [VirusTotal](https://www.virustotal.com/) before publishing; the release notes show the detection count and a link to the full report for each. If VirusTotal does not finish the analysis, the release is not published.
 - **SHA-256 checksum** in the release notes and in `SHA256SUMS.txt`. Compare it with the hash of your download:
 
   ```powershell
-  (Get-FileHash .\SunoCheck.exe -Algorithm SHA256).Hash
+  (Get-FileHash .\SunoCheck-Setup.exe -Algorithm SHA256).Hash
   ```
 
 - **Build attestation.** GitHub signs the link "file ↔ commit ↔ workflow". To verify (needs [GitHub CLI](https://cli.github.com/)):
 
   ```powershell
-  gh attestation verify .\SunoCheck.exe --repo moonzlo/SunoCheck
+  gh attestation verify .\SunoCheck-Setup.exe --repo moonzlo/SunoCheck
   ```
 
 Some antivirus engines occasionally flag PyInstaller-built programs because their unpacker resembles malware packers. If in doubt, run from source.
@@ -96,7 +100,7 @@ Some antivirus engines occasionally flag PyInstaller-built programs because thei
 
 ### Window with charts
 
-Run `SunoCheck.exe` or, from source:
+Start SunoCheck from the Start menu (or run `SunoCheck-Portable.exe`); from source:
 
 ```powershell
 uv run sunocheck-gui
@@ -147,7 +151,7 @@ The **Настройки** (Settings) menu — app behaviour:
 |---|---|---|
 | Show notifications | on | Pop-ups on detection and skip; also in the tray menu |
 | Listen right after launch | off | No need to press Start |
-| Start with Windows | off | `SunoCheck.exe` only: on sign-in the app starts in the tray and listens. Stored in the registry (`HKCU\…\Run`), not in `settings.json`; turn it on again after moving the exe |
+| Start with Windows | off | Installed and portable versions: on sign-in the app starts in the tray and listens. Stored in the registry (`HKCU\…\Run`), not in `settings.json`; uninstalling removes it. Turn it on again after moving the portable exe |
 
 The **Распознавание** (Detection) group on the left — how to look for Suno:
 
@@ -166,7 +170,7 @@ The **Распознавание** (Detection) group on the left — how to look
 
 ## Data
 
-`data/` is created next to `SunoCheck.exe`, or, when running from source, in the folder you start the app from. It stays on your machine.
+`data/` is created next to the exe: `%LOCALAPPDATA%\Programs\SunoCheck\data` for the installed version, the file's folder for the portable one, and the folder you start the app from when running from source. It stays on your machine; uninstalling does not delete it.
 
 | Path | Contents |
 |---|---|
@@ -203,10 +207,11 @@ This is an assistant, not forensic evidence: do not use its verdict against a sp
 uv sync --all-groups      # + pytest, ruff and research dependencies
 uv run pytest             # pure-logic tests (decision, blacklist, settings, fakeprint)
 uv run ruff check src tests tools packaging .github/scripts
-uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck.exe
+uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck-Portable.exe and dist\SunoCheck\
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$(uv version --short)" packaging\sunocheck.iss   # dist\SunoCheck-Setup.exe
 ```
 
-Every push and pull request to `main` runs [CI](.github/workflows/ci.yml): lint, tests and an exe build (kept as an artifact for 14 days).
+Every push and pull request to `main` runs [CI](.github/workflows/ci.yml): lint, tests, installer and portable exe builds (kept as an artifact for 14 days).
 
 Releasing:
 
@@ -228,7 +233,7 @@ Releasing:
 | `tools/` | GUI smoke test with screenshots, responsiveness probe, decision replay over recordings |
 | `research/` | detector research (in Russian) |
 | `docs/` | feature docs (in Russian) |
-| `packaging/` | exe build (PyInstaller) |
+| `packaging/` | exe (PyInstaller) and installer (Inno Setup) builds |
 | `.github/` | CI, release, VirusTotal and release-notes scripts |
 
 The code is functional: pure functions and frozen dataclasses, classes only for external systems (audio capture, media session, window). Errors are not masked by fallbacks; they stop with a clear message.
@@ -244,6 +249,6 @@ The code is functional: pure functions and frozen dataclasses, classes only for 
 - Fakeprint weights: [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector) by Matěj Štágl, MIT ([LICENSE-lofcz.txt](src/sunocheck/models/LICENSE-lofcz.txt)).
 - Research corpus: [Kukedlc/suno-ai-music-dataset](https://huggingface.co/datasets/Kukedlc/suno-ai-music-dataset), [FMA](https://github.com/mdeff/fma), [MTG-Jamendo](https://mtg.github.io/mtg-jamendo-dataset/).
 - UI: [PySide6](https://doc.qt.io/qtforpython-6/) (LGPL) and [pyqtgraph](https://www.pyqtgraph.org/); audio capture: [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch).
-- `SunoCheck.exe` bundles these libraries, Python and Qt under their own licenses (Qt and PySide6: LGPL v3). The [Development](#development) section shows how to build the exe with other versions of them.
+- The installer and the portable exe bundle these libraries, Python and Qt under their own licenses (Qt and PySide6: LGPL v3). The [Development](#development) section shows how to build the exe with other versions of them.
 
 SunoCheck is not affiliated with Suno, Inc. Suno is a trademark of its owner.

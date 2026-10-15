@@ -130,6 +130,8 @@ NOTIFY_MARGIN: int = 16
 # Named pipe per Windows user: a second launch only raises the running window, so two instances never skip twice.
 INSTANCE_SERVER: str = f"{APP_ID}-{getpass.getuser()}"
 INSTANCE_TIMEOUT_MS: int = 500
+# Held while running; the installer's AppMutex (packaging/sunocheck.iss) asks to close the app before replacing files.
+INSTALLER_MUTEX: str = "SunoCheckRunning"
 ASFW_ANY: int = -1
 ABOUT_LOGO_PX: int = 96
 HEADER_CONTROL_HEIGHT: int = 36
@@ -1173,6 +1175,9 @@ def main() -> None:
     app = QApplication(sys.argv)
     if activate_running_instance():
         return
+    installer_mutex: int = ctypes.windll.kernel32.CreateMutexW(None, False, INSTALLER_MUTEX)
+    if not installer_mutex:
+        raise ctypes.WinError()
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setQuitOnLastWindowClosed(False)
@@ -1189,6 +1194,7 @@ def main() -> None:
         window.start_listening()
     exit_code: int = app.exec()
     server.close()
+    ctypes.windll.kernel32.CloseHandle(installer_mutex)
     sys.exit(exit_code)
 
 

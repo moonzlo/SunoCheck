@@ -30,7 +30,7 @@ def scan_row(scan: dict[str, str | int]) -> str:
 def release_notes(section: str, version: str, repo: str, scans: list[dict[str, str | int]]) -> str:
     flagged: bool = any(int(scan["malicious"]) + int(scan["suspicious"]) > 0 for scan in scans)
     false_positive_note: str = (
-        "\n> Часть антивирусов помечает файл. Так бывает с программами, собранными PyInstaller: их распаковщик похож на упаковщики"
+        "\n> Часть антивирусов помечает файлы. Так бывает с программами, собранными PyInstaller: их распаковщик похож на упаковщики"
         " вирусов. Исходный код и сборка открыты: см. workflow `release.yml` и аттестацию ниже.\n"
         if flagged
         else ""
@@ -40,8 +40,15 @@ def release_notes(section: str, version: str, repo: str, scans: list[dict[str, s
 
 ## Скачать · Download
 
-**[SunoCheck.exe](https://github.com/{repo}/releases/download/v{version}/SunoCheck.exe)** — Windows 10/11 x64, без установки.
-Данные (записи, разметка, чёрный список) хранятся в папке `data` рядом с exe, настройки — в `%APPDATA%\\SunoCheck`.
+Windows 10/11 x64.
+
+- **[SunoCheck-Setup.exe](https://github.com/{repo}/releases/download/v{version}/SunoCheck-Setup.exe)** — установщик, рекомендуется.
+  Ставится без прав администратора в `%LOCALAPPDATA%\\Programs\\SunoCheck`, добавляет ярлык в «Пуск», удаляется через «Приложения».
+  Запускается за пару секунд. Обновление — установить новую версию поверх.
+- **[SunoCheck-Portable.exe](https://github.com/{repo}/releases/download/v{version}/SunoCheck-Portable.exe)** — один файл без установки.
+  Каждый запуск занимает 10–20 с: файл распаковывает себя во временную папку.
+
+Данные (записи, разметка, чёрный список) лежат в папке `data` рядом с exe, настройки — в `%APPDATA%\\SunoCheck`.
 
 ## Проверка безопасности · Security
 
@@ -52,16 +59,16 @@ def release_notes(section: str, version: str, repo: str, scans: list[dict[str, s
 Контрольная сумма скачанного файла должна совпасть с таблицей и с `SHA256SUMS.txt`:
 
 ```powershell
-(Get-FileHash .\\SunoCheck.exe -Algorithm SHA256).Hash
+(Get-FileHash .\\SunoCheck-Setup.exe -Algorithm SHA256).Hash
 ```
 
-Файл собран GitHub Actions из тега `v{version}` этого репозитория; это подтверждает аттестация сборки:
+Файлы собраны GitHub Actions из тега `v{version}` этого репозитория; это подтверждает аттестация сборки:
 
 ```powershell
-gh attestation verify .\\SunoCheck.exe --repo {repo}
+gh attestation verify .\\SunoCheck-Setup.exe --repo {repo}
 ```
 
-Exe не подписан сертификатом, поэтому SmartScreen при первом запуске может показать «Windows защитила ваш компьютер»:
+Файлы не подписаны сертификатом, поэтому SmartScreen при первом запуске может показать «Windows защитила ваш компьютер»:
 «Подробнее» → «Выполнить в любом случае».
 """
 

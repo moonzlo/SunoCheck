@@ -72,11 +72,15 @@
 
 ## Установка
 
-### Готовый exe
+### Установщик (рекомендуется)
 
-Скачайте **[SunoCheck.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck.exe)** из [последнего релиза](https://github.com/moonzlo/SunoCheck/releases/latest), положите в любую папку, куда у вас есть права на запись (например, `Документы\SunoCheck`), и запустите. Установка не нужна: данные приложение хранит в папке `data` рядом с exe.
+Скачайте **[SunoCheck-Setup.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck-Setup.exe)** из [последнего релиза](https://github.com/moonzlo/SunoCheck/releases/latest) и запустите. Права администратора не нужны: программа ставится в `%LOCALAPPDATA%\Programs\SunoCheck`, ярлык появляется в «Пуске», удаляется SunoCheck через «Параметры → Приложения». Для обновления установите новую версию поверх старой: настройки, данные и чёрный список сохранятся.
 
-Exe не подписан сертификатом, поэтому при первом запуске SmartScreen может показать «Windows защитила ваш компьютер»: нажмите «Подробнее» → «Выполнить в любом случае». Перед этим можно убедиться, что файл настоящий, см. [Проверка exe](#проверка-exe).
+### Портативная версия
+
+**[SunoCheck-Portable.exe](https://github.com/moonzlo/SunoCheck/releases/latest/download/SunoCheck-Portable.exe)** — один файл без установки. Положите его в папку, куда у вас есть права на запись (например, `Документы\SunoCheck`): данные программа хранит в папке `data` рядом с ним. Каждый запуск занимает 10–20 с, потому что файл распаковывает себя во временную папку; установленная версия стартует за пару секунд.
+
+Файлы не подписаны сертификатом, поэтому при первом запуске SmartScreen может показать «Windows защитила ваш компьютер»: нажмите «Подробнее» → «Выполнить в любом случае». Перед этим можно убедиться, что файл настоящий, см. [Проверка exe](#проверка-exe).
 
 ### Из исходников
 
@@ -90,17 +94,17 @@ uv sync
 
 Каждый релиз собирается GitHub Actions из тега этого репозитория ([release.yml](.github/workflows/release.yml)), без участия чьего-либо компьютера. Сборка проходит три проверки, их результаты есть в описании релиза:
 
-- **VirusTotal.** Exe загружается на [VirusTotal](https://www.virustotal.com/) до публикации; в описании релиза — число срабатываний и ссылка на полный отчёт. Если VirusTotal не успел проверить файл, релиз не публикуется.
+- **VirusTotal.** Установщик и портативный exe загружаются на [VirusTotal](https://www.virustotal.com/) до публикации; в описании релиза — число срабатываний и ссылка на полный отчёт по каждому. Если VirusTotal не успел проверить файл, релиз не публикуется.
 - **Контрольная сумма SHA-256** — в описании релиза и в файле `SHA256SUMS.txt`. Сравните с хешем скачанного файла:
 
   ```powershell
-  (Get-FileHash .\SunoCheck.exe -Algorithm SHA256).Hash
+  (Get-FileHash .\SunoCheck-Setup.exe -Algorithm SHA256).Hash
   ```
 
 - **Аттестация сборки.** GitHub подписывает связь «файл ↔ коммит ↔ workflow». Проверка (нужен [GitHub CLI](https://cli.github.com/)):
 
   ```powershell
-  gh attestation verify .\SunoCheck.exe --repo moonzlo/SunoCheck
+  gh attestation verify .\SunoCheck-Setup.exe --repo moonzlo/SunoCheck
   ```
 
 Отдельные антивирусы иногда помечают программы, собранные PyInstaller: их распаковщик похож на упаковщики вредоносного ПО. Если сомневаетесь, запускайте из исходников.
@@ -109,7 +113,7 @@ uv sync
 
 ### Окно с графиками
 
-Запустите `SunoCheck.exe` или, из исходников:
+Запустите SunoCheck из «Пуска» (или `SunoCheck-Portable.exe`), а из исходников так:
 
 ```powershell
 uv run sunocheck-gui
@@ -172,7 +176,7 @@ uv run sunocheck --help
 |---|---|---|
 | Показывать уведомления | вкл. | Всплывающие окна об обнаружении и скипе. Дублируется в меню трея |
 | Слушать сразу после запуска | выкл. | Не нужно нажимать «Старт» |
-| Запускать вместе с Windows | выкл. | Только в `SunoCheck.exe`: при входе в Windows программа стартует в трее и сразу слушает. Хранится в реестре (`HKCU\…\Run`), а не в `settings.json`. Если переместить exe, включите заново |
+| Запускать вместе с Windows | выкл. | Установленная и портативная версии: при входе в Windows программа стартует в трее и сразу слушает. Хранится в реестре (`HKCU\…\Run`), а не в `settings.json`; удаление программы убирает и его. Если переместить портативный exe, включите заново |
 
 Группа **Распознавание** слева — как искать Suno:
 
@@ -191,7 +195,7 @@ uv run sunocheck --help
 
 ## Где лежат данные
 
-Папка `data/` создаётся рядом с `SunoCheck.exe`, а при запуске из исходников — в каталоге, из которого запущено приложение. Всё в ней остаётся на вашем компьютере.
+Папка `data/` создаётся рядом с exe: у установленной версии это `%LOCALAPPDATA%\Programs\SunoCheck\data`, у портативной — папка, где лежит файл, а при запуске из исходников — каталог, из которого запущено приложение. Всё в ней остаётся на вашем компьютере; удаление программы её не стирает.
 
 | Путь | Что |
 |---|---|
@@ -228,10 +232,11 @@ uv run sunocheck --help
 uv sync --all-groups      # + pytest, ruff и зависимости исследования
 uv run pytest             # тесты чистой логики (решение, чёрный список, настройки, fakeprint)
 uv run ruff check src tests tools packaging .github/scripts
-uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck.exe
+uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\SunoCheck-Portable.exe и dist\SunoCheck\
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$(uv version --short)" packaging\sunocheck.iss   # dist\SunoCheck-Setup.exe
 ```
 
-Каждый push и pull request в `main` проходит [CI](.github/workflows/ci.yml): линтер, тесты и сборка exe (артефакт хранится 14 дней).
+Каждый push и pull request в `main` проходит [CI](.github/workflows/ci.yml): линтер, тесты, сборка установщика и портативного exe (артефакт хранится 14 дней).
 
 Выпуск релиза:
 
@@ -255,7 +260,7 @@ uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\S
 | `tools/` | инструменты: смоук-тест окна со снимками, замер отзывчивости, повтор решения по записям |
 | `research/` | исследование детекторов |
 | `docs/` | документация функций |
-| `packaging/` | сборка exe (PyInstaller) |
+| `packaging/` | сборка exe (PyInstaller) и установщика (Inno Setup) |
 | `.github/` | CI, релиз, скрипты VirusTotal и описания релиза |
 
 Код написан в функциональном стиле: чистые функции и неизменяемые dataclass; классы только для внешних систем (захват звука, медиасессия, окно). Ошибки не маскируются запасными путями, а останавливают работу с понятным сообщением.
@@ -271,6 +276,6 @@ uv run --group build pyinstaller packaging/sunocheck.spec --noconfirm   # dist\S
 - Веса fakeprint — [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector), Matěj Štágl, MIT ([LICENSE-lofcz.txt](src/sunocheck/models/LICENSE-lofcz.txt)).
 - Корпус исследования: [Kukedlc/suno-ai-music-dataset](https://huggingface.co/datasets/Kukedlc/suno-ai-music-dataset), [FMA](https://github.com/mdeff/fma), [MTG-Jamendo](https://mtg.github.io/mtg-jamendo-dataset/).
 - Интерфейс: [PySide6](https://doc.qt.io/qtforpython-6/) (LGPL) и [pyqtgraph](https://www.pyqtgraph.org/); захват звука: [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch).
-- `SunoCheck.exe` включает эти библиотеки, Python и Qt под их собственными лицензиями (Qt и PySide6 — LGPL v3). Собрать exe с другими их версиями можно командой из раздела [Разработка](#разработка).
+- Установщик и портативный exe включают эти библиотеки, Python и Qt под их собственными лицензиями (Qt и PySide6 — LGPL v3). Собрать exe с другими их версиями можно командой из раздела [Разработка](#разработка).
 
 SunoCheck не связан с Suno, Inc. Suno — товарный знак его владельца.

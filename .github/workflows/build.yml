@@ -1,6 +1,6 @@
 name: Build
 
-# Reusable: lint, tests and the portable SunoCheck.exe as the "SunoCheck-exe" artifact.
+# Reusable: lint, tests, SunoCheck-Setup.exe and SunoCheck-Portable.exe as the "SunoCheck-windows" artifact.
 on:
   workflow_call:
 
@@ -29,12 +29,20 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
-      - name: Build SunoCheck.exe
+      - name: Build executables
         run: uv run pyinstaller packaging/sunocheck.spec --noconfirm --distpath dist --workpath build
+
+      # Inno Setup is preinstalled on the windows-2025 runner image.
+      - name: Build installer
+        run: |
+          $version = uv version --short
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" packaging\sunocheck.iss
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: SunoCheck-exe
-          path: dist/SunoCheck.exe
+          name: SunoCheck-windows
+          path: |
+            dist/SunoCheck-Setup.exe
+            dist/SunoCheck-Portable.exe
           if-no-files-found: error
           retention-days: 14
