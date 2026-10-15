@@ -102,9 +102,15 @@ Run `SunoCheck.exe` or, from source:
 uv run sunocheck-gui
 ```
 
-Press **Старт** (Start) and play music. Closing the window keeps the app in the tray: click the icon to open the panel, right-click for the menu (mode, labels, exit). The dot on the icon shows the status: green — listening, yellow — suspected, red — Suno, blue — silence, grey — stopped.
+Press **Старт** (Start) and play music. Closing the window keeps the app in the tray: click the icon to open the panel, right-click for the menu (mode, labels, notifications, exit). The dot on the icon shows the status: green — listening, yellow — suspected, red — Suno, blue — silence, grey — stopped. SunoCheck runs as a single instance: launching it again opens the running window.
 
-Mode, in the settings on the left:
+Window menu:
+
+- **Файл** (File) — open the data folder, exit (Ctrl+Q).
+- **Настройки** (Settings) — app behaviour, see [Settings](#settings).
+- **Справка** (Help) — how it works, check for updates (opens the releases page; the app itself never goes online), report a problem (GitHub Issues with the app version), message the author on Telegram, about.
+
+Mode, in the «Распознавание» (Detection) group on the left:
 
 - **Только отмечать** (log only, default) — a notification with the reason.
 - **Скипать** (skip) — the app presses the "next track" media key.
@@ -134,6 +140,16 @@ Details (in Russian): [docs/blacklist.md](docs/blacklist.md).
 ## Settings
 
 Saved immediately to `%APPDATA%\SunoCheck\settings.json`; only values that differ from the defaults are stored.
+
+The **Настройки** (Settings) menu — app behaviour:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Show notifications | on | Pop-ups on detection and skip; also in the tray menu |
+| Listen right after launch | off | No need to press Start |
+| Start with Windows | off | `SunoCheck.exe` only: on sign-in the app starts in the tray and listens. Stored in the registry (`HKCU\…\Run`), not in `settings.json`; turn it on again after moving the exe |
+
+The **Распознавание** (Detection) group on the left — how to look for Suno:
 
 | Setting | Default | Meaning |
 |---|---|---|

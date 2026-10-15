@@ -3,7 +3,7 @@
 import tomllib
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
@@ -47,7 +47,8 @@ version_info = VSVersionInfo(
 analysis = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
-    datas=collect_data_files("sunocheck"),
+    # Package metadata carries the version shown in Help -> About.
+    datas=collect_data_files("sunocheck") + copy_metadata("sunocheck"),
     # winrt extension modules import each other from C, which the import scanner cannot see.
     hiddenimports=collect_submodules("winrt"),
     excludes=["tkinter"],

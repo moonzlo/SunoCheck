@@ -2,8 +2,10 @@
 settings and manual labels. The detector runs in a worker thread and reports through a queue."""
 
 import ctypes
+import getpass
 import math
 import os
+import platform
 import queue
 import sys
 import threading
@@ -11,17 +13,36 @@ import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlencode
 
 import numpy as np
 import pyqtgraph as pg
 from numpy.typing import NDArray
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QBrush, QCloseEvent, QColor, QIcon, QMouseEvent, QPainter, QPalette, QPen, QPixmap
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -45,6 +66,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sunocheck.autostart import BACKGROUND_FLAG, autostart_command, read_autostart, write_autostart
 from sunocheck.blacklist import (
     BlacklistAction,
     BlacklistEntry,
@@ -83,9 +105,17 @@ from sunocheck.study import LabeledAudio, StudyInputError, labeled_recordings, s
 APP_ID: str = "SunoCheck"
 APP_NAME: str = "SunoCheck"
 APP_TAGLINE: str = "AI music detection"
+APP_VERSION: str = metadata.version("sunocheck")
+APP_AUTHOR: str = "Mikhail (moonzlo)"
+REPO_URL: str = "https://github.com/moonzlo/SunoCheck"
+README_URL: str = f"{REPO_URL}#readme"
+RELEASES_URL: str = f"{REPO_URL}/releases/latest"
+ISSUES_URL: str = f"{REPO_URL}/issues/new"
+TELEGRAM_URL: str = "https://t.me/moonzlo"
 LOGO_PATH: Path = Path(__file__).parent / "assets" / "sunocheck.png"
+FROZEN: bool = getattr(sys, "frozen", False)
 # The release .exe is portable: its data lives next to the executable, whatever folder it was started from.
-DATA_DIR: Path = (Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd()) / "data"
+DATA_DIR: Path = (Path(sys.executable).parent if FROZEN else Path.cwd()) / "data"
 RECORDINGS_DIR: Path = DATA_DIR / "recordings"
 SESSIONS_DIR: Path = DATA_DIR / "sessions"
 LABELS_PATH: Path = DATA_DIR / "labels.csv"
@@ -97,6 +127,11 @@ LEVEL_FLOOR_DB: float = -60.0
 NOTIFY_MS: int = 6000
 NOTIFY_WIDTH: int = 360
 NOTIFY_MARGIN: int = 16
+# Named pipe per Windows user: a second launch only raises the running window, so two instances never skip twice.
+INSTANCE_SERVER: str = f"{APP_ID}-{getpass.getuser()}"
+INSTANCE_TIMEOUT_MS: int = 500
+ASFW_ANY: int = -1
+ABOUT_LOGO_PX: int = 96
 HEADER_CONTROL_HEIGHT: int = 36
 SCORE_AXIS: tuple[float, float] = (-40.0, 10.0)
 COMB_AXIS: tuple[float, float] = (-10.0, 4.0)
@@ -176,6 +211,10 @@ SPECTRAL_FIELDS: tuple[tuple[str, str, str], ...] = (
 
 
 class TrayUnavailableError(RuntimeError):
+    pass
+
+
+class InstanceServerError(RuntimeError):
     pass
 
 
@@ -267,6 +306,49 @@ def detection_reason(
     if point is not None and point.score < STRONG_LOGIT:
         return f"{shifted_text(point)}, уверенно"
     return f"{fakeprint_text(point)}, уверенно (≥ {STRONG_LOGIT:+.0f})"
+
+
+def issue_url(version: str, system: str, frozen: bool) -> str:
+    build: str = "exe" if frozen else "из исходников"
+    body: str = f"Что произошло:\n\n\nЧто ожидалось:\n\n\n---\n{APP_NAME} {version} ({build}), {system}"
+    return f"{ISSUES_URL}?{urlencode({'body': body})}"
+
+
+def about_html(version: str) -> str:
+    return (
+        f"<h2>{APP_NAME}</h2>"
+        f"<p>{APP_TAGLINE}<br>Версия {version}</p>"
+        f"<p>Автор: {APP_AUTHOR}<br>"
+        f'<a href="{REPO_URL}">GitHub</a> · <a href="{TELEGRAM_URL}">Telegram</a></p>'
+        "<p>Лицензия MIT. Веса fakeprint — "
+        '<a href="https://github.com/lofcz/ai-music-detector">lofcz/ai-music-detector</a> (MIT).<br>'
+        "Не связан с Suno, Inc.</p>"
+    )
+
+
+def activate_running_instance() -> bool:
+    """True when this user already runs SunoCheck; connecting is the signal for it to show its window."""
+    socket = QLocalSocket()
+    socket.connectToServer(INSTANCE_SERVER)
+    if not socket.waitForConnected(INSTANCE_TIMEOUT_MS):
+        return False
+    # Windows blocks focus stealing; the launched process is in the foreground and may hand that right over.
+    ctypes.windll.user32.AllowSetForegroundWindow(ASFW_ANY)
+    socket.disconnectFromServer()
+    return True
+
+
+def listen_for_instances(on_activate: Callable[[], None]) -> QLocalServer:
+    server = QLocalServer()
+    if not server.listen(INSTANCE_SERVER):
+        raise InstanceServerError(f"Cannot listen on {INSTANCE_SERVER}: {server.errorString()}")
+
+    def accept() -> None:
+        server.nextPendingConnection().deleteLater()
+        on_activate()
+
+    server.newConnection.connect(accept)
+    return server
 
 
 def logo_pixmap() -> QPixmap:
@@ -395,6 +477,7 @@ class DetectorWindow(QMainWindow):
         self.setWindowIcon(QIcon(logo_pixmap()))
         self.resize(1180, 780)
         self._build_layout()
+        self._build_menu()
         self._show_blacklist()
         self._build_tray()
         self._popup = NotificationPopup(self._show_window)
@@ -454,7 +537,7 @@ class DetectorWindow(QMainWindow):
         panel.setFixedWidth(340)
         layout = QVBoxLayout(panel)
 
-        settings_box = QGroupBox("Настройки")
+        settings_box = QGroupBox("Распознавание")
         form = QFormLayout(settings_box)
         self._mode_box = QComboBox()
         for mode, title in MODE_CHOICES:
@@ -514,9 +597,6 @@ class DetectorWindow(QMainWindow):
             lambda: self._blacklist_track(self._track, BlacklistAction.ADD, BlacklistSource.BUTTON)
         )
         label_layout.addWidget(blacklist_button)
-        open_button = QPushButton("Открыть папку данных")
-        open_button.clicked.connect(self._open_data_dir)
-        label_layout.addWidget(open_button)
         layout.addWidget(label_box)
         layout.addStretch(1)
         return panel
@@ -643,6 +723,80 @@ class DetectorWindow(QMainWindow):
         layout.addWidget(box, alignment=Qt.AlignmentFlag.AlignTop)
         return values
 
+    def _build_menu(self) -> None:
+        bar = self.menuBar()
+        file_menu = bar.addMenu("Файл")
+        file_menu.addAction("Открыть папку данных", self._open_data_dir)
+        file_menu.addSeparator()
+        quit_action = file_menu.addAction("Выход", self._quit)
+        quit_action.setShortcut(QKeySequence("Ctrl+Q"))
+
+        settings_menu = bar.addMenu("Настройки")
+        settings_menu.setToolTipsVisible(True)
+        self._notify_action = settings_menu.addAction("Показывать уведомления")
+        self._notify_action.setCheckable(True)
+        self._notify_action.setChecked(self._settings.notifications_enabled)
+        self._notify_action.toggled.connect(lambda on: self._apply_settings(replace(self._settings, notifications_enabled=on)))
+        launch_action = settings_menu.addAction("Слушать сразу после запуска")
+        launch_action.setCheckable(True)
+        launch_action.setChecked(self._settings.listen_on_launch)
+        launch_action.toggled.connect(lambda on: self._apply_settings(replace(self._settings, listen_on_launch=on)))
+        self._autostart_action = settings_menu.addAction("Запускать вместе с Windows")
+        self._autostart_action.setCheckable(True)
+        self._autostart_action.setEnabled(FROZEN)
+        if FROZEN:
+            self._autostart_action.setChecked(read_autostart() == autostart_command(Path(sys.executable)))
+            self._autostart_action.setToolTip("SunoCheck стартует в трее и сразу слушает")
+        else:
+            self._autostart_action.setToolTip("Доступно только в SunoCheck.exe")
+        self._autostart_action.toggled.connect(self._set_autostart)
+
+        help_menu = bar.addMenu("Справка")
+        help_menu.addAction("Как это работает", lambda: self._open_url(README_URL))
+        help_menu.addAction(f"Проверить обновления (у вас {APP_VERSION})", lambda: self._open_url(RELEASES_URL))
+        help_menu.addAction("Сообщить о проблеме", lambda: self._open_url(issue_url(APP_VERSION, platform.platform(), FROZEN)))
+        help_menu.addAction("Написать автору в Telegram", lambda: self._open_url(TELEGRAM_URL))
+        help_menu.addSeparator()
+        help_menu.addAction("О программе", self._show_about)
+
+    def _set_autostart(self, enabled: bool) -> None:
+        try:
+            write_autostart(autostart_command(Path(sys.executable)) if enabled else None)
+        except OSError as error:
+            self._autostart_action.blockSignals(True)
+            self._autostart_action.setChecked(not enabled)
+            self._autostart_action.blockSignals(False)
+            QMessageBox.critical(self, "Автозапуск", f"Не удалось изменить автозапуск в реестре Windows:\n{error}")
+            return
+        self._append_log(f"автозапуск с Windows: {'включён' if enabled else 'выключен'}")
+
+    def _open_url(self, url: str) -> None:
+        if not QDesktopServices.openUrl(QUrl(url)):
+            QMessageBox.warning(self, "Ссылка не открылась", f"Откройте адрес вручную:\n{url}")
+
+    def _show_about(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"О программе {APP_NAME}")
+        layout = QVBoxLayout(dialog)
+        logo = QLabel()
+        logo.setPixmap(
+            logo_pixmap().scaled(
+                ABOUT_LOGO_PX, ABOUT_LOGO_PX, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+            )
+        )
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(logo)
+        text = QLabel(about_html(APP_VERSION))
+        text.setTextFormat(Qt.TextFormat.RichText)
+        text.setOpenExternalLinks(True)
+        text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(text)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
     def _build_tray(self) -> None:
         self._tray = QSystemTrayIcon(status_icon(STATUS_COLORS["STOPPED"]), self)
         menu = QMenu()
@@ -665,6 +819,7 @@ class DetectorWindow(QMainWindow):
             "Автора — в чёрный список", lambda: self._blacklist_track(self._track, BlacklistAction.ADD, BlacklistSource.BUTTON)
         )
         menu.addSeparator()
+        menu.addAction(self._notify_action)
         menu.addAction("Выход", self._quit)
         self._tray_menu = menu
         self._tray.setContextMenu(menu)
@@ -693,7 +848,9 @@ class DetectorWindow(QMainWindow):
         )
 
     def _on_setting_changed(self) -> None:
-        settings: AppSettings = self._read_settings_from_widgets()
+        self._apply_settings(self._read_settings_from_widgets())
+
+    def _apply_settings(self, settings: AppSettings) -> None:
         if settings == self._settings:
             return
         self._settings = settings
@@ -710,6 +867,10 @@ class DetectorWindow(QMainWindow):
         self._mode_box.setCurrentIndex([m for m, _ in MODE_CHOICES].index(mode))
 
     # ---------- worker control ----------
+
+    def start_listening(self) -> None:
+        if self._worker is None:
+            self._start()
 
     def _toggle(self) -> None:
         if self._worker is None:
@@ -751,11 +912,15 @@ class DetectorWindow(QMainWindow):
         self.hide()
         if not self._tray_hint_shown:
             self._tray_hint_shown = True
-            self._popup.notify(
+            self._notify(
                 f"{APP_NAME} работает в фоне",
                 "Клик по иконке в трее — открыть пульт, правый клик — меню и выход.",
                 STATUS_COLORS["SILENCE"],
             )
+
+    def _notify(self, title: str, body: str, color: str) -> None:
+        if self._settings.notifications_enabled:
+            self._popup.notify(title, body, color)
 
     def _show_window(self) -> None:
         self.showNormal()
@@ -798,7 +963,7 @@ class DetectorWindow(QMainWindow):
                 self._skipped += 1
                 self._update_counters()
                 self._append_log(f">>> СКИП: {describe(track)}")
-                self._popup.notify(f"Пропущен Suno: {describe(track)}", self._last_reason, STATUS_COLORS["DETECTED"])
+                self._notify(f"Пропущен Suno: {describe(track)}", self._last_reason, STATUS_COLORS["DETECTED"])
                 self._blacklist_track(track, BlacklistAction.ADD, BlacklistSource.SKIP)
             case RecordingSaved(path=path):
                 self._append_log(f"запись: {path.name}")
@@ -860,7 +1025,7 @@ class DetectorWindow(QMainWindow):
             self._last_reason = reason
             self._append_log(f"обнаружен Suno — {reason}")
             if self._settings.mode is Mode.LOG:
-                self._popup.notify(f"Похоже на Suno: {describe(evaluation.track)}", reason, STATUS_COLORS["DETECTED"])
+                self._notify(f"Похоже на Suno: {describe(evaluation.track)}", reason, STATUS_COLORS["DETECTED"])
 
     def _on_comb(self, checkpoint: Checkpoint, score: float) -> None:
         self._comb_scores.append((checkpoint, score))
@@ -1006,14 +1171,25 @@ def configure_plots(app: QApplication) -> None:
 def main() -> None:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     app = QApplication(sys.argv)
+    if activate_running_instance():
+        return
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setQuitOnLastWindowClosed(False)
     if not QSystemTrayIcon.isSystemTrayAvailable():
         raise TrayUnavailableError("System tray is not available; the background mode needs it")
     configure_plots(app)
-    window = DetectorWindow(load_model(DEFAULT_MODEL_PATH), load_settings(SETTINGS_PATH))
-    window.show()
-    sys.exit(app.exec())
+    settings: AppSettings = load_settings(SETTINGS_PATH)
+    window = DetectorWindow(load_model(DEFAULT_MODEL_PATH), settings)
+    server: QLocalServer = listen_for_instances(window._show_window)
+    background: bool = BACKGROUND_FLAG in sys.argv[1:]
+    if not background:
+        window.show()
+    if background or settings.listen_on_launch:
+        window.start_listening()
+    exit_code: int = app.exec()
+    server.close()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
