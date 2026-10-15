@@ -3,7 +3,9 @@
 Above the threshold curve a track is only suspected (HOLD): live, dense modern human pop scored up to +3.6
 there (Billie Eilish, Море Дождей). It is flagged once scores stay at or above STRONG_LOGIT (live Suno:
 +12...+23) for `confirm_seconds` of track time, or the shifted-Suno model score stays at or above
-SHIFTED_LOGIT (research H18), or at or above LOCK_LOGIT with a semitone lock contrast of LOCK_CONTRAST (H21);
+SHIFTED_LOGIT after a semitone undo (research H18) or at r = 1 (H27), or at or above LOCK_LOGIT with a
+semitone lock contrast of LOCK_CONTRAST (H21), or the slowdown search stays at or above SPEED_LOGIT with a
+speed lock contrast of SPEED_CONTRAST (H23);
 otherwise only the coherent comb can flag it (see listener)."""
 
 from dataclasses import dataclass
@@ -11,7 +13,7 @@ from enum import StrEnum
 
 import numpy as np
 
-from sunocheck.fakeprint import ShiftedScore
+from sunocheck.fakeprint import ShiftedScore, SpeedScore
 
 # Fakeprint logit threshold vs. seconds of buffered audio. Logits of all music grow as the average
 # gets longer, so short buffers need a lower bar. No decision before the first point: on 1-4 s
@@ -20,10 +22,14 @@ from sunocheck.fakeprint import ShiftedScore
 THRESHOLD_CURVE: tuple[tuple[float, float], ...] = ((5.0, -12.0), (8.0, -9.0), (30.0, -6.0), (60.0, -5.0))
 STRONG_LOGIT: float = 10.0
 # Shifted-Suno model: human max +6.2 on the corpus (grouped CV), live humans <= +4.6, live evasions +10...+29.
+# At r = 1 (H27): corpus humans <= +3.8 out of fold (11 variants), live humans <= -0.6.
 SHIFTED_LOGIT: float = 8.0
 # Corpus out-of-fold humans: <= 2 of 2812 windows of 10 s, 0 of 1718 of 20 s; live humans >= 2.8 short of a bound.
 LOCK_LOGIT: float = 2.0
 LOCK_CONTRAST: float = 5.0
+# Corpus humans (8 variants incl. slowed, ~9000 windows): 0, closest 1.1 short; live humans >= 6.5 short.
+SPEED_LOGIT: float = 6.0
+SPEED_CONTRAST: float = 6.0
 
 
 class Phase(StrEnum):
@@ -64,16 +70,29 @@ def lock_min_score(threshold_offset: float) -> float:
 
 
 def update_evidence(
-    evidence: Evidence, score: float, shifted: ShiftedScore, threshold: float, track_seconds: float, config: DecisionConfig
+    evidence: Evidence,
+    score: float,
+    shifted: ShiftedScore,
+    speed: SpeedScore | None,
+    threshold: float,
+    track_seconds: float,
+    config: DecisionConfig,
 ) -> Evidence:
-    """`shifted` (shifted-Suno model) only counts towards the strong run, never towards HOLD."""
+    """`shifted` (shifted-Suno model) and `speed` (latest slowdown search, None before the first) only count
+    towards the strong run, never towards HOLD."""
     if evidence.phase is Phase.DETECTED:
         return evidence
     locked: bool = shifted.lock_contrast is not None and shifted.lock_contrast >= LOCK_CONTRAST
+    speed_locked: bool = (
+        speed is not None
+        and speed.lock_contrast >= SPEED_CONTRAST
+        and speed.score >= max(threshold, SPEED_LOGIT + config.threshold_offset)
+    )
     strong: bool = (
         score >= max(threshold, STRONG_LOGIT + config.threshold_offset)
-        or shifted.score >= max(threshold, SHIFTED_LOGIT + config.threshold_offset)
+        or max(shifted.score, shifted.original) >= max(threshold, SHIFTED_LOGIT + config.threshold_offset)
         or (locked and shifted.score >= max(threshold, lock_min_score(config.threshold_offset)))
+        or speed_locked
     )
     if not strong:
         return Evidence(phase=Phase.HOLD if score >= threshold else Phase.LISTEN, strong_since=None)

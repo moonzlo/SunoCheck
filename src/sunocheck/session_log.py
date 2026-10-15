@@ -32,6 +32,10 @@ EVALUATION_HEADER: tuple[str, ...] = (
     "shifted_score",
     "blacklisted",
     "lock_contrast",
+    "speed_score",
+    "speed_contrast",
+    "speed_ratio",
+    "shifted_original_score",
 )
 LABEL_HEADER: tuple[str, ...] = ("time", "app", "artist", "title", "label", "max_score")
 
@@ -60,6 +64,9 @@ def evaluation_row(evaluation: Evaluation, now: datetime) -> tuple[str, ...]:
             f"{value:.4f}"
             for value in (r.bpm, r.pulse_clarity, r.tempo_drift_pct, r.tempo_jump_pct, r.grid_tightness, r.hf_attack_ratio)
         )
+    speed_values: tuple[str, ...] = ("",) * 3
+    if evaluation.speed is not None:
+        speed_values = (f"{evaluation.speed.score:.3f}", f"{evaluation.speed.lock_contrast:.3f}", f"{evaluation.speed.ratio:.5f}")
     s = evaluation.spectral
     return (
         now.isoformat(timespec="milliseconds"),
@@ -79,6 +86,8 @@ def evaluation_row(evaluation: Evaluation, now: datetime) -> tuple[str, ...]:
         f"{evaluation.shifted_score:.3f}",
         str(int(evaluation.blacklisted)),
         "" if evaluation.lock_contrast is None else f"{evaluation.lock_contrast:.3f}",
+        *speed_values,
+        f"{evaluation.shifted_original_score:.3f}",
     )
 
 

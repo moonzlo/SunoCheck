@@ -37,11 +37,23 @@ BAND_BINS: NDArray[np.intp] = np.flatnonzero((_FREQS >= FREQ_MIN_HZ) & (_FREQS <
 SHIFT_SEMITONES: tuple[int, ...] = (1, 2, 3)
 # Live evasions were off the exact ratio by up to 0.04 % (resampling between 44.1 and 48 kHz).
 SHIFT_TOLERANCE: NDArray[np.float64] = np.exp(np.arange(-2, 3) * 0.0002)
+# Unshifted Suno (research H27): the exact undo gives the shifted model original-pitch Suno, so it also scores the
+# stream as is. The stream band ends at 8 kHz, so the tolerance only reaches below r = 1.
+ORIGINAL_TOLERANCE: NDArray[np.float64] = SHIFT_TOLERANCE[SHIFT_TOLERANCE <= 1.0]
 # Semitone lock (research H21): 0.2-2 % off the exact undo the restored peaks miss the shifted weights, so shifted
 # Suno scores far above its neighbors there; humans score alike along r.
-LOCK_NEIGHBORS: NDArray[np.float64] = np.exp(np.concatenate((np.arange(-100, -9, 5), np.arange(10, 101, 5))) * 0.0002)
+RATIO_STEP: float = 0.0002
+LOCK_NEIGHBOR_STEPS: NDArray[np.intp] = np.concatenate((np.arange(-100, -9, 5), np.arange(10, 101, 5)))
+LOCK_NEIGHBORS: NDArray[np.float64] = np.exp(LOCK_NEIGHBOR_STEPS * RATIO_STEP)
 # Lowest r = f_observed / f_original the stream can undo, with a margin below 3 semitones down.
 STREAM_MIN_RATIO: float = 0.8
+# Speed lock (research H23): resampled (slowed) Suno keeps sharp peaks at r * f, and lofcz matches them again only
+# at the exact r. Peaks are searched up to a 2 % slowdown; closer to r = 1 is the plain fakeprint score.
+SPEED_RATIOS: NDArray[np.float64] = np.exp(np.arange(math.ceil(math.log(STREAM_MIN_RATIO) / RATIO_STEP) + 1, 1) * RATIO_STEP)
+SPEED_PEAK_COUNT: int = int(np.searchsorted(SPEED_RATIOS, 0.98, side="right"))
+# The peak is about +-2 grid steps wide: every 4th ratio first, then the full grid around the best.
+SPEED_COARSE: NDArray[np.intp] = np.arange(0, SPEED_PEAK_COUNT, 4)
+SPEED_REFINE_STEPS: NDArray[np.intp] = np.arange(-2, 3)
 STREAM_BINS: NDArray[np.intp] = np.flatnonzero((_FREQS >= FREQ_MIN_HZ * STREAM_MIN_RATIO) & (_FREQS <= FREQ_MAX_HZ))
 BAND_OFFSET: int = int(BAND_BINS[0] - STREAM_BINS[0])
 _WINDOW: NDArray[np.float64] = np.hanning(N_FFT + 1)[:-1]
@@ -171,10 +183,12 @@ def stream_fakeprint(stream: SpectrumStream) -> FloatArray:
 
 @dataclass(frozen=True)
 class ShiftedScore:
-    """`lock_contrast`: `score` minus the best logit at LOCK_NEIGHBORS of the winning semitone; None when skipped."""
+    """`lock_contrast`: `score` minus the best logit at LOCK_NEIGHBORS of the winning semitone; None when skipped.
+    `original`: logit at r = 1 (ORIGINAL_TOLERANCE)."""
 
     score: float
     lock_contrast: float | None
+    original: float
 
 
 def stream_shifted_score(stream: SpectrumStream, model: FakeprintModel, lock_min_score: float) -> ShiftedScore:
@@ -184,13 +198,37 @@ def stream_shifted_score(stream: SpectrumStream, model: FakeprintModel, lock_min
     mean_db: NDArray[np.float64] = stream_mean_db(stream)
     exact: NDArray[np.float64] = 2.0 ** (-np.array(SHIFT_SEMITONES, dtype=np.float64) / 12)
     ratios: NDArray[np.float64] = np.outer(exact, SHIFT_TOLERANCE)
-    scores: FloatArray = (fakeprint_from_band(warped_bands(mean_db, ratios.ravel())) @ model.weights).reshape(ratios.shape)
+    every: FloatArray = fakeprint_from_band(warped_bands(mean_db, np.concatenate((ratios.ravel(), ORIGINAL_TOLERANCE)))) @ model.weights
+    scores: FloatArray = every[: ratios.size].reshape(ratios.shape)
+    original: float = float(every[ratios.size :].max()) + model.bias
     semitone, _ = np.unravel_index(np.argmax(scores), scores.shape)
     score: float = float(scores.max()) + model.bias
     if score < lock_min_score:
-        return ShiftedScore(score=score, lock_contrast=None)
+        return ShiftedScore(score=score, lock_contrast=None, original=original)
     neighbors: FloatArray = fakeprint_from_band(warped_bands(mean_db, exact[semitone] * LOCK_NEIGHBORS)) @ model.weights
-    return ShiftedScore(score=score, lock_contrast=score - float(neighbors.max()) - model.bias)
+    return ShiftedScore(score=score, lock_contrast=score - float(neighbors.max()) - model.bias, original=original)
+
+
+@dataclass(frozen=True)
+class SpeedScore:
+    """lofcz logit at the best slowdown undo `ratio`; `lock_contrast`: `score` minus the best logit
+    LOCK_NEIGHBOR_STEPS grid steps away from it."""
+
+    score: float
+    lock_contrast: float
+    ratio: float
+
+
+def speed_score(mean_db: NDArray[np.float64], model: FakeprintModel) -> SpeedScore:
+    """Speed lock of a mean stream spectrum over SPEED_RATIOS; ~45 ms, so the listener runs it beside the loop."""
+    coarse: FloatArray = fakeprint_from_band(warped_bands(mean_db, SPEED_RATIOS[SPEED_COARSE])) @ model.weights
+    refine: NDArray[np.intp] = np.clip(SPEED_COARSE[np.argmax(coarse)] + SPEED_REFINE_STEPS, 0, SPEED_PEAK_COUNT - 1)
+    refined: FloatArray = fakeprint_from_band(warped_bands(mean_db, SPEED_RATIOS[refine])) @ model.weights
+    best: int = int(refine[np.argmax(refined)])
+    around: NDArray[np.intp] = np.clip(best + LOCK_NEIGHBOR_STEPS, 0, SPEED_RATIOS.size - 1)
+    neighbors: FloatArray = fakeprint_from_band(warped_bands(mean_db, SPEED_RATIOS[around])) @ model.weights
+    score: float = float(refined.max()) + model.bias
+    return SpeedScore(score=score, lock_contrast=score - float(neighbors.max()) - model.bias, ratio=float(SPEED_RATIOS[best]))
 
 
 def ai_probability(mono: FloatArray, sample_rate: int, model: FakeprintModel) -> float:

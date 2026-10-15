@@ -50,9 +50,13 @@ RULES: tuple[tuple[float, float], ...] = (
     (4.0, 3.0),
     (4.0, 4.0),
 )
+FILE_RULES: tuple[tuple[float, float], ...] = ((8.0, -np.inf), (2.0, 5.0))
 STEP_SECONDS: float = 0.5
 RATIO_STEP: float = 0.0002
-CORE_STEPS: NDArray[np.int64] = np.arange(-2, 3)
+CORE_STEPS: NDArray[np.int64] = np.arange(-6, 7)
+# Core half-widths compared (steps of RATIO_STEP): 2 = the app before 0.3, 4 and 6 cover undo ratios rounded
+# to a whole rate (MAVIRA and Jernblod peak 0.05-0.06 % below the exact semitone).
+CORE_WIDTHS: tuple[int, ...] = (2, 4, 6)
 NEIGHBOR_STEPS: NDArray[np.int64] = np.concatenate([-np.arange(10, 101, 5)[::-1], np.arange(10, 101, 5)])
 
 
@@ -63,18 +67,20 @@ def ratio_grid() -> NDArray[np.float64]:
     return np.outer(exact, np.exp(steps * RATIO_STEP))
 
 
-def peak_and_contrast(scores: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """scores (rows, semitones, core + neighbor steps) -> per row: best core score, contrast of that semitone."""
+def peak_and_contrast(scores: NDArray[np.float64], core_width: int) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """scores (rows, semitones, core + neighbor steps) -> per row: best score within core_width steps of the exact
+    ratio, contrast of that semitone."""
     core: int = CORE_STEPS.size
-    core_best: NDArray[np.float64] = scores[:, :, :core].max(axis=2)
+    inside: NDArray[np.bool_] = np.abs(CORE_STEPS) <= core_width
+    core_best: NDArray[np.float64] = scores[:, :, :core][:, :, inside].max(axis=2)
     contrast: NDArray[np.float64] = core_best - scores[:, :, core:].max(axis=2)
     best: NDArray[np.intp] = np.argmax(core_best, axis=1)
     rows: NDArray[np.intp] = np.arange(scores.shape[0])
     return core_best[rows, best], contrast[rows, best]
 
 
-def lock_trajectory(mono: NDArray[np.float32]) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
-    """Per step: (seconds, peak = best core score over semitones, contrast of that semitone)."""
+def lock_trajectory(mono: NDArray[np.float32]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Per step: (seconds, scores (steps, semitones, core + neighbor steps))."""
     model = load_model(SHIFTED_MODEL_PATH)
     grid: NDArray[np.float64] = ratio_grid()
     max_frames: int = int(DEFAULT_SETTINGS.max_seconds * MODEL_SAMPLE_RATE) // STREAM_HOP
@@ -90,8 +96,7 @@ def lock_trajectory(mono: NDArray[np.float32]) -> tuple[NDArray[np.float64], NDA
         mean_db: NDArray[np.float64] = np.mean(stream.frames, axis=0, dtype=np.float64)
         steps.append((fakeprint_from_band(warped_bands(mean_db, grid.ravel())) @ model.weights + model.bias).reshape(grid.shape))
         seconds.append(now)
-    peaks, contrasts = peak_and_contrast(np.stack(steps))
-    return np.array(seconds), peaks, contrasts
+    return np.array(seconds), np.stack(steps)
 
 
 def fold_models(
@@ -144,8 +149,10 @@ def corpus() -> None:
             w = load_windows(items, variant, blocks, 2)
             known: NDArray[np.bool_] = np.array([item in fold_of for item in w.item_id.tolist()])
             folds: NDArray[np.intp] = np.array([fold_of[item] for item in w.item_id[known].tolist()], dtype=np.intp)
-            peaks, contrasts = peak_and_contrast(corpus_scores(w.mid[known], folds, weights, biases))
-            print(rule_table(f"{blocks * BLOCK_SECONDS:g} s {name}", peaks, contrasts), flush=True)
+            scores: NDArray[np.float64] = corpus_scores(w.mid[known], folds, weights, biases)
+            for width in CORE_WIDTHS:
+                peaks, contrasts = peak_and_contrast(scores, width)
+                print(rule_table(f"{blocks * BLOCK_SECONDS:g} s {name} ±{width}", peaks, contrasts), flush=True)
 
 
 def detection_second(seconds: NDArray[np.float64], hits: NDArray[np.bool_]) -> float | None:
@@ -162,16 +169,18 @@ def detection_second(seconds: NDArray[np.float64], hits: NDArray[np.bool_]) -> f
 
 
 def files(paths: list[Path]) -> None:
-    """Per recording and rule: detection second, and the closest joint margin min(peak - P, contrast - C)."""
-    print("rules: " + " | ".join(f"P{p:g}/C{c:g}" for p, c in RULES))
+    """Per recording, core width and rule: detection second, and the closest joint margin min(peak - P, contrast - C)."""
+    print("columns: " + " | ".join(f"±{w} P{p:g}/C{c:g}" for w in CORE_WIDTHS for p, c in FILE_RULES))
     for path in paths:
         audio, rate = sf.read(path, dtype="float32", always_2d=True)
-        seconds, peaks, contrasts = lock_trajectory(resample_to_model_rate(audio.mean(axis=1), rate))
+        seconds, scores = lock_trajectory(resample_to_model_rate(audio.mean(axis=1), rate))
         cells: list[str] = []
-        for p, c in RULES:
-            when: float | None = detection_second(seconds, (peaks >= p) & (contrasts >= c))
-            margin: float = float(np.minimum(peaks - p, contrasts - c).max())
-            cells.append(f"{'-' if when is None else f'{when:.1f}s':>6} {margin:+5.1f}")
+        for width in CORE_WIDTHS:
+            peaks, contrasts = peak_and_contrast(scores, width)
+            for p, c in FILE_RULES:
+                when: float | None = detection_second(seconds, (peaks >= p) & (contrasts >= c))
+                margin: float = float(np.minimum(peaks - p, contrasts - c).max())
+                cells.append(f"{'-' if when is None else f'{when:.1f}s':>6} {margin:+5.1f}")
         print(f"{path.stem[16:60]:<44} " + " | ".join(cells), flush=True)
 
 

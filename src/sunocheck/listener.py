@@ -34,7 +34,16 @@ from sunocheck.coherent_comb import (
     last_comb_score,
     push_comb_audio,
 )
-from sunocheck.decision import DecisionConfig, Evidence, Phase, initial_evidence, lock_min_score, score_threshold, update_evidence
+from sunocheck.decision import (
+    THRESHOLD_CURVE,
+    DecisionConfig,
+    Evidence,
+    Phase,
+    initial_evidence,
+    lock_min_score,
+    score_threshold,
+    update_evidence,
+)
 from sunocheck.fakeprint import (
     MODEL_SAMPLE_RATE,
     SHIFTED_MODEL_PATH,
@@ -43,11 +52,14 @@ from sunocheck.fakeprint import (
     FloatArray,
     ShiftedScore,
     SpectrumStream,
+    SpeedScore,
     empty_stream,
     load_model,
     push_samples,
     score_from_fakeprint,
+    speed_score,
     stream_fakeprint,
+    stream_mean_db,
     stream_shifted_score,
 )
 from sunocheck.media_keys import press_next_track
@@ -60,6 +72,8 @@ CHUNK_SECONDS: float = 0.04
 READ_TIMEOUT_SECONDS: float = 1.0
 SILENCE_FRAME_SECONDS: float = 0.02
 RHYTHM_INTERVAL_SECONDS: float = 5.0
+# Pace of the slowdown search (research H23 was validated at 0.5 s steps with the 1 s confirmation).
+SPEED_INTERVAL_SECONDS: float = 0.5
 RECORDING_MIN_SECONDS: float = 8.0
 SESSION_POLL_SECONDS: float = 1.0
 SESSION_TIMEOUT_SECONDS: float = 5.0
@@ -112,6 +126,8 @@ class TrackState:
     samples_since_rhythm: int
     evidence: Evidence
     max_score: float
+    speed: SpeedScore | None
+    speed_submitted_at: int
 
 
 @dataclass(frozen=True)
@@ -157,6 +173,8 @@ class Evaluation:
     score: float
     shifted_score: float
     lock_contrast: float | None
+    shifted_original_score: float
+    speed: SpeedScore | None
     threshold: float
     max_score: float
     track_seconds: float
@@ -185,6 +203,13 @@ class CombJob:
     serial: int
     checkpoint: Checkpoint
     future: "Future[float]"
+
+
+@dataclass(frozen=True)
+class SpeedJob:
+    serial: int
+    future: "Future[SpeedScore]"
+
 
 @dataclass(frozen=True)
 class SkipPerformed:
@@ -231,6 +256,17 @@ def new_track(info: TrackInfo | None, serial: int) -> TrackState:
         samples_since_rhythm=0,
         evidence=initial_evidence(),
         max_score=float("-inf"),
+        speed=None,
+        speed_submitted_at=0,
+    )
+
+
+def is_due_for_speed(track: TrackState, interval_samples: int) -> bool:
+    """No decision before the first threshold point, and none needed once detected."""
+    return (
+        track.evidence.phase is not Phase.DETECTED
+        and track.samples >= int(THRESHOLD_CURVE[0][0] * MODEL_SAMPLE_RATE)
+        and track.total_samples - track.speed_submitted_at >= interval_samples
     )
 
 
@@ -336,7 +372,7 @@ def evaluate(
     buffered_seconds: float = track.samples / MODEL_SAMPLE_RATE
     track_seconds: float = track.total_samples / MODEL_SAMPLE_RATE
     threshold: float = score_threshold(buffered_seconds, config.decision.threshold_offset)
-    evidence: Evidence = update_evidence(track.evidence, score, shifted, threshold, track_seconds, config.decision)
+    evidence: Evidence = update_evidence(track.evidence, score, shifted, track.speed, threshold, track_seconds, config.decision)
     blacklisted: bool = is_blacklisted(track, config, skipped)
     if comb_detected(track.comb) or blacklisted:
         evidence = Evidence(phase=Phase.DETECTED, strong_since=evidence.strong_since)
@@ -346,6 +382,8 @@ def evaluate(
         score=score,
         shifted_score=shifted.score,
         lock_contrast=shifted.lock_contrast,
+        shifted_original_score=shifted.original,
+        speed=track.speed,
         threshold=threshold,
         max_score=max(track.max_score, score),
         track_seconds=track_seconds,
@@ -399,6 +437,9 @@ def run_listener(
     # Long comb FFTs (up to 0.5 s) run beside the loop so scores and the level meter keep flowing.
     comb_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="comb")
     comb_job: CombJob | None = None
+    # The slowdown search (~45 ms) runs beside the loop too; its latest result counts until the next one.
+    speed_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speed")
+    speed_job: SpeedJob | None = None
     shifted_model: FakeprintModel = load_model(SHIFTED_MODEL_PATH)
     skipped: TrackInfo | None = None
 
@@ -413,6 +454,11 @@ def run_listener(
                     track = replace(track, comb=add_comb_score(track.comb, score))
                     emit(CombScored(track.info, comb_job.checkpoint, score, comb_detected(track.comb)))
                 comb_job = None
+
+            if speed_job is not None and speed_job.future.done():
+                if speed_job.serial == track.serial:
+                    track = replace(track, speed=speed_job.future.result())
+                speed_job = None
 
             while not session_watcher.events.empty():
                 match session_watcher.events.get_nowait():
@@ -491,6 +537,9 @@ def run_listener(
             if comb_job is None and checkpoint is not None:
                 audio: FloatArray = comb_audio(track.comb, checkpoint, rate)
                 comb_job = CombJob(track.serial, checkpoint, comb_pool.submit(comb_score, audio, rate))
+            if speed_job is None and is_due_for_speed(track, int(SPEED_INTERVAL_SECONDS * MODEL_SAMPLE_RATE)):
+                speed_job = SpeedJob(track.serial, speed_pool.submit(speed_score, stream_mean_db(track.spectrum), model))
+                track = replace(track, speed_submitted_at=track.total_samples)
             interval_samples: int = int(config.eval_interval_seconds * MODEL_SAMPLE_RATE)
             if not is_due_for_evaluation(track, int(config.min_seconds * MODEL_SAMPLE_RATE), interval_samples):
                 continue
@@ -516,6 +565,7 @@ def run_listener(
                 ignore_until = now + config.cooldown_seconds
     finally:
         comb_pool.shutdown(wait=False, cancel_futures=True)
+        speed_pool.shutdown(wait=False, cancel_futures=True)
         session_watcher.stop()
         if active is not None:
             active.capture.close()

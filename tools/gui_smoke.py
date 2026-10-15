@@ -50,6 +50,8 @@ def main(out: Path) -> None:
                 score=score,
                 shifted_score=score - 5.0,
                 lock_contrast=None,
+                shifted_original_score=score - 5.0,
+                speed=None,
                 threshold=threshold,
                 max_score=score,
                 track_seconds=seconds,

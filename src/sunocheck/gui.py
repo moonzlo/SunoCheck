@@ -80,8 +80,8 @@ from sunocheck.blacklist import (
 )
 from sunocheck.coherent_comb import CHECKPOINTS as COMB_CHECKPOINTS
 from sunocheck.coherent_comb import Checkpoint
-from sunocheck.decision import LOCK_CONTRAST, LOCK_LOGIT, SHIFTED_LOGIT, STRONG_LOGIT, Phase
-from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, load_model
+from sunocheck.decision import LOCK_CONTRAST, LOCK_LOGIT, SHIFTED_LOGIT, SPEED_CONTRAST, SPEED_LOGIT, STRONG_LOGIT, Phase
+from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, SpeedScore, load_model
 from sunocheck.listener import (
     CapturePaused,
     CaptureStarted,
@@ -283,6 +283,8 @@ class ScorePoint:
     score: float
     shifted_score: float
     lock_contrast: float | None
+    shifted_original_score: float
+    speed: SpeedScore | None
     threshold: float
     phase: Phase
 
@@ -320,7 +322,26 @@ def shifted_text(point: ScorePoint | None) -> str:
         if point.lock_contrast is None
         else f"; пик ровно на полутоне {point.lock_contrast:+.1f} (порог {LOCK_CONTRAST:+.0f} при балле от {LOCK_LOGIT:+.0f})"
     )
-    return f"Suno с пониженным тоном: балл {point.shifted_score:+.1f} (порог {SHIFTED_LOGIT:+.0f}){lock}"
+    speed: str = "" if point.speed is None else f"; {speed_text(point.speed)}"
+    return (
+        f"Suno с пониженным тоном: балл {point.shifted_score:+.1f} (порог {SHIFTED_LOGIT:+.0f}){lock}"
+        f"; {original_text(point)}{speed}"
+    )
+
+
+def original_text(point: ScorePoint) -> str:
+    return f"та же модель без сдвига: балл {point.shifted_original_score:+.1f} (порог {SHIFTED_LOGIT:+.0f})"
+
+
+def speed_text(speed: SpeedScore) -> str:
+    return (
+        f"замедление ×{speed.ratio:.3f}: балл {speed.score:+.1f}, пик над соседними скоростями {speed.lock_contrast:+.1f}"
+        f" (порог {SPEED_LOGIT:+.0f} и {SPEED_CONTRAST:+.0f})"
+    )
+
+
+def speed_locked(speed: SpeedScore) -> bool:
+    return speed.score >= SPEED_LOGIT and speed.lock_contrast >= SPEED_CONTRAST
 
 
 def comb_text(scores: list[tuple[Checkpoint, float]]) -> str:
@@ -346,6 +367,14 @@ def detection_reason(
     fired: tuple[Checkpoint, float] | None = comb_fired(comb_scores)
     if fired is not None:
         return comb_text([fired])
+    if point is not None and point.score < STRONG_LOGIT and point.speed is not None and speed_locked(point.speed):
+        return f"Suno с изменённой скоростью: {speed_text(point.speed)}, уверенно"
+    if (
+        point is not None
+        and point.score < STRONG_LOGIT
+        and point.shifted_original_score >= max(SHIFTED_LOGIT, point.shifted_score)
+    ):
+        return f"Suno без сдвига по модели сдвинутого Suno: {original_text(point)}, уверенно"
     if point is not None and point.score < STRONG_LOGIT:
         return f"{shifted_text(point)}, уверенно"
     return f"{fakeprint_text(point)}, уверенно (≥ {STRONG_LOGIT:+.0f})"
@@ -1176,6 +1205,8 @@ class DetectorWindow(QMainWindow):
             evaluation.score,
             evaluation.shifted_score,
             evaluation.lock_contrast,
+            evaluation.shifted_original_score,
+            evaluation.speed,
             evaluation.threshold,
             evaluation.phase,
         )

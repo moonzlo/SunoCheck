@@ -38,13 +38,14 @@ The interface is in Russian.
 
 ## How it works
 
-Suno's neural decoder leaves traces that a live recording does not have. SunoCheck looks for them with three independent detectors; a track is flagged when at least one of them is confident.
+Suno's neural decoder leaves traces that a live recording does not have. SunoCheck looks for them with four independent detectors; a track is flagged when at least one of them is confident.
 
 | Detector | Looks for | Fires when |
 |---|---|---|
 | **Fakeprint** | Narrow peaks in the 1–8 kHz mean spectrum; logistic regression over 3585 features, weights from [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector) | The logit stays ≥ +10 for 1 s. Above the threshold curve but below +10 only means "suspected" |
 | **200 Hz comb** | Suno decodes in 5 ms frames, which leaves phase-stable lines at exactly k·200 Hz. One long FFT over the first 2.5–45 s of audio makes them narrow and tall | Line contrast exceeds the threshold at any checkpoint |
-| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s, or a score ≥ +2 peaks sharply at the exact semitone (at least 5 lower 0.2–2 % off it) |
+| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s, or a score ≥ +2 peaks sharply at the exact semitone (at least 5 lower 0.2–2 % off it). The same model without the undo catches weak unshifted Suno: the score stays ≥ +8 for 1 s |
+| **Slowed Suno** | Tracks slowed by 2–20 % through resampling. The artifact peaks survive but move; fakeprint searches the slowdown ratio | A score ≥ +6 peaks sharply at one ratio (at least 6 lower 0.2–2 % off it) for 1 s |
 
 The [artist blacklist](#artist-blacklist) works on top of the audio detectors.
 
@@ -199,7 +200,7 @@ Live thresholds are stricter than in the table: flagging a real artist is worse 
 Limitations:
 
 - **Suno only.** Other generators (Udio etc.) were not tested.
-- **Processing hurts.** Speed changes, pitch-up and heavy reverb (slowed + reverb) weaken the traces. Pitch-down by 1–3 semitones has its own model; pitch-up cannot be undone in the 16 kHz stream.
+- **Processing hurts.** Speed-up, pitch-up and heavy reverb (slowed + reverb) weaken the traces. Pitch-down by 1–3 semitones has its own model, a 2–20 % slowdown without reverb is found by a ratio search; speed-up and pitch-up cannot be undone in the 16 kHz stream.
 - **Dense modern pop** sometimes lifts the fakeprint to "suspected"; a "Suno" verdict needs a much higher score.
 - **The blacklist is metadata-based.** A false skip blacklists a real artist; check the tab and fix it with «Это человек».
 - **Windows only** (WASAPI capture, Windows media session).
