@@ -1,7 +1,6 @@
 """Coherent comb: ppm refine (H41) restores score after small speed skew."""
 
 import numpy as np
-import pytest
 
 from sunocheck.coherent_comb import BASE_HZ, CHECKPOINTS, comb_score, comb_score_fixed
 
