@@ -38,13 +38,14 @@ The interface is in Russian.
 
 ## How it works
 
-Suno's neural decoder leaves traces that a live recording does not have. SunoCheck looks for them with four independent detectors; a track is flagged when at least one of them is confident.
+Suno's neural decoder leaves traces that a live recording does not have. SunoCheck looks for them with five independent detectors; a track is flagged when at least one of them is confident.
 
 | Detector | Looks for | Fires when |
 |---|---|---|
 | **Fakeprint** | Narrow peaks in the 1–8 kHz mean spectrum; logistic regression over 3585 features, weights from [lofcz/ai-music-detector](https://github.com/lofcz/ai-music-detector) | The logit stays ≥ +10 for 1 s. Above the threshold curve but below +10 only means "suspected" |
-| **200 Hz comb** | Suno decodes in 5 ms frames, which leaves phase-stable lines at exactly k·200 Hz. One long FFT over the first 2.5–45 s of audio makes them narrow and tall | Line contrast exceeds the threshold at any checkpoint |
-| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s, or a score ≥ +2 peaks sharply at the exact semitone (at least 5 lower 0.2–2 % off it). The same model without the undo catches weak unshifted Suno: the score stays ≥ +8 for 1 s |
+| **200 Hz comb** | Suno decodes in 5 ms frames, which leaves phase-stable lines near k·200 Hz. One long FFT over the first 1–180 s of audio; small clock skew is covered by a ±150 ppm search | Line contrast exceeds the threshold at any checkpoint (often from ~1–2.5 s on strong Suno) |
+| **Pitch-shifted Suno** | Tracks lowered by 1–3 semitones via resampling before release to hide the artifacts. The spectrum is stretched back and a dedicated model looks for the smeared peak pattern | The score stays ≥ +8 for 1 s, or a score ≥ +2 peaks sharply at the exact semitone (at least 5 lower 0.2–2 % off it). The same model without the undo catches weak unshifted Suno: the score stays ≥ +8 for 1 s |
+| **Factory −1 st (WSOLA)** | Exact semitone-down without changing the sample rate (WSOLA): the usual comb and 16 kHz fakeprint go blind. A separate model on 1–14 kHz @ 32 kHz | Score ≥ 0 and contrast to neighbouring ratios ≥ 2 |
 | **Slowed Suno** | Tracks slowed by 2–20 % through resampling. The artifact peaks survive but move; fakeprint searches the slowdown ratio | A score ≥ +6 peaks sharply at one ratio (at least 6 lower 0.2–2 % off it) for 1 s |
 
 The [artist blacklist](#artist-blacklist) works on top of the audio detectors.
@@ -114,10 +115,11 @@ Audio comes from the default output device. Switch between headphones and speake
 Window menu:
 
 - **Файл** (File) — open the data folder, exit (Ctrl+Q).
+- **Вид** (View) — show or hide the side panel (Ctrl+B); when hidden, a small tongue stays on the left edge.
 - **Настройки** (Settings) — app behaviour, see [Settings](#settings).
 - **Справка** (Help) — how it works, check for updates (opens the releases page; the app itself never goes online), report a problem (GitHub Issues with the app version; attach the log `data/logs/sunocheck.log`), message the author on Telegram, about.
 
-Mode, in the «Распознавание» (Detection) group on the left:
+Mode, in the «Распознавание» (Detection) group on the left («Сбросить настройки» / Reset settings restores defaults):
 
 - **Только отмечать** (log only, default) — a notification with the reason.
 - **Скипать** (skip) — the app presses the "next track" media key.
@@ -162,11 +164,11 @@ The **Распознавание** (Detection) group on the left — how to look
 | Setting | Default | Meaning |
 |---|---|---|
 | On Suno detection | log only | or skip, or skip and blacklist the artist |
-| Threshold offset | 0 | Positive is stricter: fewer false positives, later detection |
+| Threshold offset | 0 | Positive is stricter: fewer false positives and "suspected" states, later detection |
 | Confirmation, s | 1 | How long a confident score must hold |
 | First evaluation after, s | 1 | Audio needed before the first evaluation |
 | Evaluation interval, s | 0.064 | How often the fakeprint is recomputed |
-| Track buffer, s | 60 | How many recent seconds count |
+| Track buffer, s | 180 | How many recent seconds count (needed for the long comb checkpoints) |
 | Silence threshold, dBFS | −50 | Quieter is silence |
 | Silence = new track, s | 0.4 | Gap that starts a new track |
 | Pause after skip, s | 3 | Audio ignored after a skip |
@@ -195,14 +197,14 @@ Research corpus: 280 Suno v2–v5.5 tracks and 722 human tracks from FMA and MTG
 | 200 Hz comb, 10 s | original | 1.000 | 1.00 | 0.96 |
 | 200 Hz comb, 10 s | AAC 128 | 0.999 | 0.99 | 0.91 |
 
-Live thresholds are stricter than in the table: flagging a real artist is worse than a miss. A Suno track is usually detected in 5–20 s, a blacklisted artist in about 1 s, a pitch-shifted track usually in 8–13 s.
+Live thresholds are stricter than in the table: flagging a real artist is worse than a miss. A Suno track is usually detected in 2.5–20 s (the comb often beats fakeprint), a blacklisted artist in about 1 s, a resampled pitch-down track usually in 8–13 s, WSOLA −1 st once the factory window fills (~9–15 s).
 
 Limitations:
 
 - **Suno only.** Other generators (Udio etc.) were not tested.
-- **Processing hurts.** Speed-up, pitch-up and heavy reverb (slowed + reverb) weaken the traces. Pitch-down by 1–3 semitones has its own model, a 2–20 % slowdown without reverb is found by a ratio search; speed-up and pitch-up cannot be undone in the 16 kHz stream.
-- **Dense modern pop** sometimes lifts the fakeprint to "suspected"; a "Suno" verdict needs a much higher score.
-- **The blacklist is metadata-based.** A false skip blacklists a real artist; check the tab and fix it with «Это человек».
+- **Processing hurts.** Speed-up, pitch-up and heavy reverb (slowed + reverb) weaken the traces. Resampled pitch-down by 1–3 semitones has its own model, WSOLA −1 st uses the factory detector, a 2–20 % slowdown without reverb is found by a ratio search; speed-up and pitch-up cannot be undone in the 16 kHz stream. Some factory tracks (Dust&Harmony, Phase Syndicate, Jernblod) still slip past every detector.
+- **Dense modern pop** sometimes lifts the fakeprint to "suspected"; a "Suno" verdict needs a much higher score. The suspicion curve was raised for live Yandex listening so fewer real tracks flash orange.
+- **The blacklist is metadata-based.** A false skip blacklists a real artist; check the tab and fix it with «Это человек». Browser tabs often send empty SMTC metadata, so artist blacklisting from the browser is unavailable.
 - **Windows only** (WASAPI capture, Windows media session).
 
 This is an assistant, not forensic evidence: do not use its verdict against a specific artist.
@@ -226,16 +228,16 @@ Releasing:
 2. Commit and tag the same version:
 
    ```powershell
-   git tag v0.2.0
-   git push origin main v0.2.0
+   git tag v0.4.0
+   git push origin main v0.4.0
    ```
 
 [release.yml](.github/workflows/release.yml) checks the tag against the version and CHANGELOG, builds the exe, scans it on VirusTotal and publishes a release with notes from CHANGELOG.
 
 | Path | Contents |
 |---|---|
-| `src/sunocheck/` | the app: capture (`capture.py`), detectors (`fakeprint.py`, `coherent_comb.py`), decision (`decision.py`), loop (`listener.py`), window (`gui.py`), console (`cli.py`) |
-| `src/sunocheck/models/` | fakeprint model weights |
+| `src/sunocheck/` | the app: capture (`capture.py`), detectors (`fakeprint.py`, `coherent_comb.py`, `factory_fakeprint.py`), decision (`decision.py`), loop (`listener.py`), window (`gui.py`), console (`cli.py`) |
+| `src/sunocheck/models/` | fakeprint and factory model weights |
 | `tests/` | pytest |
 | `tools/` | GUI smoke test with screenshots, responsiveness probe, decision replay over recordings |
 | `research/` | detector research (in Russian) |
