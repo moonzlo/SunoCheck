@@ -19,7 +19,13 @@ from sunocheck.fakeprint import ShiftedScore, SpeedScore
 # gets longer, so short buffers need a lower bar. No decision before the first point: on 1-4 s
 # buffers sparse tonal intros of human tracks score like Suno (live Yandex Music session), while
 # real Suno tracks start low and rise.
-THRESHOLD_CURVE: tuple[tuple[float, float], ...] = ((5.0, -12.0), (8.0, -9.0), (30.0, -6.0), (60.0, -5.0))
+#
+# Recalibrated 2026-10-16 from live Yandex sessions (session_20261016_*): the old curve
+# (−12/−9/−6/−5) put ~23 % of human tracks into HOLD with scores −6…−3.5 (LeanJe, Palach, RAM,
+# Vopross). Replay: new curve clears those HOLD_only (9→0) while session DETECTED via comb /
+# factory / strong (8) is unchanged. Dense H14 humans at +2…+3.6 can still HOLD; DETECTED still
+# needs STRONG_LOGIT / comb / factory.
+THRESHOLD_CURVE: tuple[tuple[float, float], ...] = ((5.0, -3.0), (8.0, -1.5), (30.0, 0.0), (60.0, 1.0))
 STRONG_LOGIT: float = 10.0
 # Shifted-Suno model: human max +6.2 on the corpus (grouped CV), live humans <= +4.6, live evasions +10...+29.
 # At r = 1 (H27): corpus humans <= +3.8 out of fold (11 variants), live humans <= -0.6.

@@ -35,7 +35,8 @@ DEFAULT_SETTINGS = AppSettings(
     threshold_offset=0.0,
     confirm_seconds=1.0,
     min_seconds=1.0,
-    max_seconds=60.0,
+    # H42: comb checkpoints go to 180 s; buffer must cover the last one.
+    max_seconds=180.0,
     eval_interval_seconds=STREAM_HOP / MODEL_SAMPLE_RATE,
     silence_db=-50.0,
     silence_gap_seconds=0.4,

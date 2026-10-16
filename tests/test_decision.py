@@ -37,8 +37,8 @@ def run_speed(scores: list[tuple[float, float, ShiftedScore, SpeedScore | None]]
 
 def test_no_decision_on_short_buffers() -> None:
     assert math.isinf(score_threshold(4.9, 0.0))
-    assert score_threshold(8.0, 0.0) == -9.0
-    assert score_threshold(8.0, 1.5) == -7.5
+    assert score_threshold(8.0, 0.0) == -1.5
+    assert score_threshold(8.0, 1.5) == 0.0
 
 
 def test_above_threshold_is_only_suspected() -> None:

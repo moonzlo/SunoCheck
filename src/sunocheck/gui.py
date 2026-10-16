@@ -20,7 +20,7 @@ from urllib.parse import urlencode
 import numpy as np
 import pyqtgraph as pg
 from numpy.typing import NDArray
-from PySide6.QtCore import QLibraryInfo, QLocale, QObject, Qt, QTimer, QTranslator, QUrl, Signal, Slot
+from PySide6.QtCore import QLibraryInfo, QLocale, QObject, QSize, Qt, QTimer, QTranslator, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QResizeEvent,
     QShowEvent,
 )
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -59,6 +60,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStyledItemDelegate,
     QSystemTrayIcon,
@@ -81,6 +84,7 @@ from sunocheck.blacklist import (
 from sunocheck.coherent_comb import CHECKPOINTS as COMB_CHECKPOINTS
 from sunocheck.coherent_comb import Checkpoint
 from sunocheck.decision import LOCK_CONTRAST, LOCK_LOGIT, SHIFTED_LOGIT, SPEED_CONTRAST, SPEED_LOGIT, STRONG_LOGIT, Phase
+from sunocheck.factory_fakeprint import FACTORY_CONTRAST, FACTORY_LOGIT, FactoryScore, factory_joint
 from sunocheck.fakeprint import DEFAULT_MODEL_PATH, FakeprintModel, FloatArray, SpeedScore, load_model
 from sunocheck.listener import (
     CapturePaused,
@@ -102,7 +106,14 @@ from sunocheck.listener import (
 from sunocheck.media_session import TrackInfo, artist_key
 from sunocheck.rhythm import RhythmMetrics
 from sunocheck.session_log import EVALUATION_HEADER, LABEL_HEADER, append_csv_row, evaluation_row, label_row
-from sunocheck.settings import SETTINGS_PATH, AppSettings, load_settings, save_settings, to_listen_config
+from sunocheck.settings import (
+    DEFAULT_SETTINGS,
+    SETTINGS_PATH,
+    AppSettings,
+    load_settings,
+    save_settings,
+    to_listen_config,
+)
 from sunocheck.spectral_metrics import SpectralMetrics
 from sunocheck.study import LabeledAudio, StudyInputError, labeled_recordings, study_report
 from sunocheck.theme import (
@@ -153,12 +164,24 @@ INSTALLER_MUTEX: str = "SunoCheckRunning"
 ASFW_ANY: int = -1
 ABOUT_LOGO_PX: int = 96
 HEADER_CONTROL_HEIGHT: int = 36
-SIDE_PANEL_WIDTH: int = 360
-ADVANCED_INDENT: int = 20
+STATUS_CHIP_HEIGHT: int = 32
+SIDE_PANEL_WIDTH: int = 308
+# Air to the right of the scroll area (before the main column).
+SIDE_PANEL_RIGHT_GAP: int = 10
+# Air between sidebar cards and the vertical scrollbar inside the scroll viewport.
+SIDE_SCROLL_BAR_GAP: int = 10
+SIDEBAR_TONGUE_WIDTH: int = 16
+SIDEBAR_TONGUE_HEIGHT: int = 34
+WINDOW_MIN_WIDTH: int = 720
+WINDOW_MIN_HEIGHT: int = 480
+PLOT_MIN_HEIGHT: int = 80
+ADVANCED_SCROLL_MAX_HEIGHT: int = 220
+METRIC_ROW_HEIGHT: int = 20
+METRIC_NAME_WIDTH: int = 78
 # The stylesheet padding of a spin box moves its frame, not the text of the inner line edit.
 SPIN_TEXT_INDENT: int = 8
-STATUS_BADGE_WIDTH: int = 150
-STATUS_BADGE_HEIGHT: int = 64
+CHEVRON_LEFT_PATH: Path = Path(__file__).parent / "assets" / "chevron-left.svg"
+CHEVRON_RIGHT_PATH: Path = Path(__file__).parent / "assets" / "chevron-right.svg"
 SCORE_AXIS: tuple[float, float] = (-40.0, 10.0)
 COMB_AXIS: tuple[float, float] = (-10.0, 4.0)
 SPECTROGRAM_COLUMNS: int = 600
@@ -285,6 +308,7 @@ class ScorePoint:
     lock_contrast: float | None
     shifted_original_score: float
     speed: SpeedScore | None
+    factory: FactoryScore | None
     threshold: float
     phase: Phase
 
@@ -351,6 +375,42 @@ def comb_text(scores: list[tuple[Checkpoint, float]]) -> str:
     return f"Гребёнка 200 Гц: {score:+.2f} дБ по {checkpoint.seconds:g} с звука (порог {checkpoint.threshold_db:+.2f})"
 
 
+def factory_text(factory: FactoryScore | None) -> str:
+    if factory is None:
+        return "Фабрика −1 st: нет данных"
+    return (
+        f"Фабрика −1 st: балл {factory.score:+.1f}, контраст {factory.lock_contrast:+.1f} "
+        f"при r={factory.ratio:.4f} (порог {FACTORY_LOGIT:+.0f} и {FACTORY_CONTRAST:+.0f})"
+    )
+
+
+def fakeprint_metric(point: ScorePoint | None) -> str:
+    if point is None:
+        return "—"
+    return f"{point.score:+.1f}  ·  порог {point.threshold:+.1f}"
+
+
+def shifted_metric(point: ScorePoint | None) -> str:
+    if point is None:
+        return "—"
+    lock = "—" if point.lock_contrast is None else f"{point.lock_contrast:+.1f}"
+    speed = "—" if point.speed is None else f"×{point.speed.ratio:.3f} {point.speed.score:+.1f}"
+    return f"{point.shifted_score:+.1f} / orig {point.shifted_original_score:+.1f}  ·  lock {lock}  ·  {speed}"
+
+
+def comb_metric(scores: list[tuple[Checkpoint, float]]) -> str:
+    if not scores:
+        return f"ждёт {COMB_CHECKPOINTS[0].seconds:g} с"
+    checkpoint, score = scores[-1]
+    return f"{score:+.2f} дБ @ {checkpoint.seconds:g} с  ·  порог {checkpoint.threshold_db:+.2f}"
+
+
+def factory_metric(factory: FactoryScore | None) -> str:
+    if factory is None:
+        return "—"
+    return f"{factory.score:+.1f}  ·  ctr {factory.lock_contrast:+.1f}  ·  r={factory.ratio:.4f}"
+
+
 def comb_fired(scores: list[tuple[Checkpoint, float]]) -> tuple[Checkpoint, float] | None:
     return next(((c, s) for c, s in scores if s >= c.threshold_db), None)
 
@@ -367,6 +427,8 @@ def detection_reason(
     fired: tuple[Checkpoint, float] | None = comb_fired(comb_scores)
     if fired is not None:
         return comb_text([fired])
+    if point is not None and factory_joint(point.factory):
+        return f"{factory_text(point.factory)}, уверенно"
     if point is not None and point.score < STRONG_LOGIT and point.speed is not None and speed_locked(point.speed):
         return f"Suno с изменённой скоростью: {speed_text(point.speed)}, уверенно"
     if (
@@ -618,9 +680,15 @@ class DetectorWindow(QMainWindow):
         self._last_reason: str = ""
         self._spectrogram: NDArray[np.float32] = blank_spectrogram()
         self._blacklist: dict[str, BlacklistEntry] = blacklist_entries(BLACKLIST_PATH)
+        self._sidebar_action: QAction | None = None
+        self._notify_action: QAction | None = None
+        self._launch_action: QAction | None = None
+        self._track_full_text: str = "-"
+        self._device_full_text: str = "Устройство: -"
 
         self.setWindowTitle(f"{APP_NAME} — {APP_TAGLINE}")
         self.setWindowIcon(QIcon(logo_pixmap()))
+        self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.resize(1180, 780)
         mica: bool = mica_supported()
         if mica:
@@ -642,84 +710,191 @@ class DetectorWindow(QMainWindow):
 
     # ---------- layout ----------
 
+    def _shrinkable_plot(self, plot: pg.PlotWidget) -> pg.PlotWidget:
+        """pyqtgraph defaults to a large minimumSizeHint that blocks window shrink."""
+        plot.setMinimumSize(0, PLOT_MIN_HEIGHT)
+        plot.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        return plot
+
+    def _set_elided(self, label: QLabel, text: str) -> None:
+        label.setToolTip(text)
+        width: int = max(label.width(), label.minimumWidth(), 120)
+        label.setText(label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width))
+
     def _build_layout(self) -> None:
-        central = QWidget()
-        root = QHBoxLayout(central)
-        # The menu bar already leaves space above, so the top margin is a single gap.
-        root.setContentsMargins(OUTER_MARGIN, GAP // 2, OUTER_MARGIN, OUTER_MARGIN)
-        root.setSpacing(GAP)
-        root.addWidget(self._build_side_panel())
-        main = QVBoxLayout()
-        main.setSpacing(GAP)
-        main.addWidget(self._build_verdict_card())
-        main.addWidget(self._build_tabs(), stretch=1)
-        root.addLayout(main, stretch=1)
-        self.setCentralWidget(central)
+        """HBox (not splitter): side card keeps fixed width, main column always gets the leftover."""
+        self._sidebar_open: bool = True
+        self._sidebar_reveal = self._build_sidebar_tongue()
+        self._side_panel = self._build_side_panel()
+        self._main_column = QWidget()
+        self._main_column.setMinimumWidth(0)
+        self._main_column.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._main_layout = QVBoxLayout(self._main_column)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(GAP)
+        self._main_layout.addWidget(self._build_verdict_card())
+        self._main_layout.addWidget(self._build_tabs(), stretch=1)
+        shell = QWidget()
+        self._shell_layout = QHBoxLayout(shell)
+        self._shell_layout.setSpacing(GAP)
+        self._shell_layout.addWidget(self._sidebar_reveal, 0, Qt.AlignmentFlag.AlignTop)
+        self._shell_layout.addWidget(self._side_panel, 0)
+        self._shell_layout.addWidget(self._main_column, stretch=1)
+        self.setCentralWidget(shell)
+        self._apply_sidebar_layout(True)
+
+    def _build_sidebar_tongue(self) -> QToolButton:
+        """Compact book-spine tab flush to the left window edge while the panel is hidden."""
+        tongue = QToolButton()
+        tongue.setObjectName("sidebarTongue")
+        tongue.setIcon(QIcon(str(CHEVRON_RIGHT_PATH)))
+        tongue.setIconSize(QSize(10, 10))
+        tongue.setFixedSize(SIDEBAR_TONGUE_WIDTH, SIDEBAR_TONGUE_HEIGHT)
+        tongue.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        tongue.setToolTip("Показать боковую панель (Ctrl+B)")
+        tongue.setVisible(False)
+        tongue.clicked.connect(lambda: self._set_sidebar_visible(True))
+        return tongue
 
     def _build_verdict_card(self) -> QFrame:
+        """One compact bar: status chip + track + start; meter/counters on a second aligned row."""
         card = QFrame()
         card.setObjectName("card")
         self._verdict_card: QFrame = card
-        row = QHBoxLayout(card)
-        row.setContentsMargins(CARD_PADDING, CARD_PADDING, CARD_PADDING, CARD_PADDING)
-        row.setSpacing(CARD_PADDING + 4)
+        column = QVBoxLayout(card)
+        column.setContentsMargins(CARD_PADDING, 12, CARD_PADDING, 12)
+        column.setSpacing(10)
+
+        row = QHBoxLayout()
+        row.setSpacing(GAP)
         self._status_label = QLabel()
+        self._status_label.setObjectName("statusChip")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_label.setFixedSize(STATUS_BADGE_WIDTH, STATUS_BADGE_HEIGHT)
+        self._status_label.setFixedHeight(STATUS_CHIP_HEIGHT)
+        self._status_label.setMinimumWidth(96)
         row.addWidget(self._status_label, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         info = QVBoxLayout()
-        info.setSpacing(2)
+        info.setSpacing(0)
         caption = QLabel("Сейчас играет")
         caption.setObjectName("caption")
         info.addWidget(caption)
         self._track_label = QLabel("-")
         self._track_label.setObjectName("trackTitle")
+        self._track_label.setWordWrap(False)
+        self._track_label.setFixedHeight(22)
+        self._track_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         info.addWidget(self._track_label)
-        info.addSpacing(4)
-        self._fakeprint_reason = QLabel()
-        self._shifted_reason = QLabel()
-        self._comb_reason = QLabel()
-        for label in (self._fakeprint_reason, self._shifted_reason, self._comb_reason):
-            label.setObjectName("secondary")
-            info.addWidget(label)
         row.addLayout(info, stretch=1)
 
-        side = QVBoxLayout()
-        side.setSpacing(6)
         self._start_button = QPushButton("Старт")
         self._start_button.setObjectName("primary")
-        self._start_button.setFixedSize(150, HEADER_CONTROL_HEIGHT)
+        self._start_button.setFixedSize(112, HEADER_CONTROL_HEIGHT)
         self._start_button.clicked.connect(self._toggle)
-        side.addWidget(self._start_button, alignment=Qt.AlignmentFlag.AlignRight)
-        side.addStretch(1)
+        row.addWidget(self._start_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        column.addLayout(row)
+
+        meta = QHBoxLayout()
+        meta.setSpacing(GAP)
         self._level = QProgressBar()
         self._level.setRange(0, int(-LEVEL_FLOOR_DB))
         self._level.setTextVisible(False)
-        self._level.setFixedWidth(220)
-        side.addWidget(self._level, alignment=Qt.AlignmentFlag.AlignRight)
+        self._level.setFixedHeight(6)
+        self._level.setMinimumWidth(120)
+        self._level.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        meta.addWidget(self._level, stretch=1)
         self._counters = QLabel()
-        side.addWidget(self._counters, alignment=Qt.AlignmentFlag.AlignRight)
+        self._counters.setObjectName("caption")
+        self._counters.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        self._counters.setFixedHeight(STATUS_CHIP_HEIGHT)
+        meta.addWidget(self._counters)
         self._device_label = QLabel("Устройство: -")
-        self._device_label.setObjectName("secondary")
-        side.addWidget(self._device_label, alignment=Qt.AlignmentFlag.AlignRight)
-        row.addLayout(side)
+        self._device_label.setObjectName("caption")
+        self._device_label.setWordWrap(False)
+        self._device_label.setFixedHeight(STATUS_CHIP_HEIGHT)
+        self._device_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+        meta.addWidget(self._device_label)
+        column.addLayout(meta)
         return card
 
-    def _build_side_panel(self) -> QWidget:
-        panel = QWidget()
+    def _metric_row(self, name: str) -> QLabel:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        name_label = QLabel(name)
+        name_label.setObjectName("metricName")
+        name_label.setFixedSize(METRIC_NAME_WIDTH, METRIC_ROW_HEIGHT)
+        value = QLabel("—")
+        value.setObjectName("metricValue")
+        value.setFixedHeight(METRIC_ROW_HEIGHT)
+        value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        value.setWordWrap(False)
+        row.addWidget(name_label)
+        row.addWidget(value, stretch=1)
+        host = QWidget()
+        host.setFixedHeight(METRIC_ROW_HEIGHT + 2)
+        host.setLayout(row)
+        self._detector_metrics_layout.addWidget(host)
+        return value
+
+    def _build_detector_details(self) -> QGroupBox:
+        box = QGroupBox("Детекторы сейчас")
+        self._detector_metrics_layout = card_column(box, 0)
+        self._detector_metrics_layout.setSpacing(6)
+        self._fakeprint_reason = self._metric_row("Fakeprint")
+        self._shifted_reason = self._metric_row("Сдвиг")
+        self._comb_reason = self._metric_row("Гребёнка")
+        self._factory_reason = self._metric_row("Фабрика")
+        return box
+
+    def _build_side_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("sidePanel")
         panel.setFixedWidth(SIDE_PANEL_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        outer = QVBoxLayout(panel)
+        # Right gap stays outside the scroll viewport so card corners are not sliced off.
+        outer.setContentsMargins(0, 0, SIDE_PANEL_RIGHT_GAP, 0)
+        outer.setSpacing(GAP)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("Панель")
+        title.setObjectName("caption")
+        header.addWidget(title)
+        header.addStretch(1)
+        self._sidebar_collapse = QToolButton()
+        self._sidebar_collapse.setObjectName("collapse")
+        self._sidebar_collapse.setIcon(QIcon(str(CHEVRON_LEFT_PATH)))
+        self._sidebar_collapse.setToolTip("Свернуть панель (Ctrl+B)")
+        self._sidebar_collapse.clicked.connect(lambda: self._set_sidebar_visible(False))
+        header.addWidget(self._sidebar_collapse)
+        outer.addLayout(header)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("sideScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setMinimumWidth(0)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        body = QWidget()
+        body.setMinimumWidth(0)
+        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, SIDE_SCROLL_BAR_GAP, 0)
         layout.setSpacing(GAP)
 
         settings_box = QGroupBox("Распознавание")
+        settings_box.setMinimumWidth(0)
         form = card_form(settings_box)
         self._mode_box = QComboBox()
-        # The default combo delegate ignores ::item stylesheet rules and draws a focus frame.
+        self._mode_box.setMinimumWidth(0)
+        self._mode_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._mode_box.setItemDelegate(QStyledItemDelegate(self._mode_box))
-        for mode, title in MODE_CHOICES:
-            self._mode_box.addItem(title, mode.value)
+        for mode, title_text in MODE_CHOICES:
+            self._mode_box.addItem(title_text, mode.value)
         self._mode_box.setCurrentIndex([m for m, _ in MODE_CHOICES].index(self._settings.mode))
         self._mode_box.currentIndexChanged.connect(self._on_setting_changed)
         mode_title = QLabel("При обнаружении Suno")
@@ -731,17 +906,25 @@ class DetectorWindow(QMainWindow):
         form.addRow(fakeprint_title)
 
         self._numeric_inputs: dict[str, QSpinBox | QDoubleSpinBox] = {}
-        advanced = QWidget()
-        advanced_form = QFormLayout(advanced)
-        # Indented under the toggle text, so the advanced fields read as a nested group.
-        advanced_form.setContentsMargins(ADVANCED_INDENT, FORM_ROW_SPACING // 2, 0, FORM_ROW_SPACING // 2)
+        for field in NUMERIC_FIELDS:
+            if field.advanced:
+                continue
+            spin = self._numeric_input(field)
+            self._numeric_inputs[field.key] = spin
+            form.addRow(field.label, spin)
+
+        advanced_body = QWidget()
+        advanced_form = QFormLayout(advanced_body)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
         advanced_form.setHorizontalSpacing(FORM_COLUMN_SPACING)
         advanced_form.setVerticalSpacing(FORM_ROW_SPACING)
         advanced_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for field in NUMERIC_FIELDS:
-            spin: QSpinBox | QDoubleSpinBox = self._numeric_input(field)
+            if not field.advanced:
+                continue
+            spin = self._numeric_input(field)
             self._numeric_inputs[field.key] = spin
-            (advanced_form if field.advanced else form).addRow(field.label, spin)
+            advanced_form.addRow(field.label, spin)
         self._rhythm_check = QCheckBox("Считать ритм-метрики")
         self._rhythm_check.setChecked(self._settings.rhythm_enabled)
         self._rhythm_check.toggled.connect(self._on_setting_changed)
@@ -757,32 +940,47 @@ class DetectorWindow(QMainWindow):
         self._session_log_check.setToolTip("Каждая оценка в data/sessions, около 9 МБ за час прослушивания")
         advanced_form.addRow(self._session_log_check)
 
+        self._advanced_scroll = QScrollArea()
+        self._advanced_scroll.setObjectName("advancedScroll")
+        self._advanced_scroll.setWidgetResizable(True)
+        self._advanced_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._advanced_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._advanced_scroll.setWidget(advanced_body)
+        self._advanced_scroll.setMaximumHeight(ADVANCED_SCROLL_MAX_HEIGHT)
+        self._advanced_scroll.setVisible(False)
+
         toggle = QToolButton()
         toggle.setText("Дополнительно")
         toggle.setCheckable(True)
         toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toggle.setArrowType(Qt.ArrowType.RightArrow)
-        advanced.setVisible(False)
 
         def toggle_advanced(shown: bool) -> None:
-            advanced.setVisible(shown)
+            self._advanced_scroll.setVisible(shown)
             toggle.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
 
         toggle.toggled.connect(toggle_advanced)
         form.addRow(toggle)
-        form.addRow(advanced)
+        form.addRow(self._advanced_scroll)
         path_label = QLabel("Настройки сохраняются сразу")
         path_label.setToolTip(str(SETTINGS_PATH))
         path_label.setObjectName("caption")
         form.addRow(path_label)
-        # The settings card takes the spare height, so both columns end on the same line as the tabs.
-        layout.addWidget(settings_box, stretch=1)
+        reset_button = QPushButton("Сбросить настройки")
+        reset_button.setToolTip("Вернуть пороги, буферы и режим к значениям по умолчанию")
+        reset_button.clicked.connect(self._reset_settings_to_defaults)
+        form.addRow(reset_button)
+        layout.addWidget(settings_box)
+        detectors_box = self._build_detector_details()
+        detectors_box.setMinimumWidth(0)
+        layout.addWidget(detectors_box)
 
         label_box = QGroupBox("Разметка текущего трека")
+        label_box.setMinimumWidth(0)
         label_layout = card_column(label_box, 0)
-        label_layout.setSpacing(FORM_ROW_SPACING - 4)
-        for title, label in (("Это ИИ", "ai"), ("Это человек", "human")):
-            button = QPushButton(title)
+        label_layout.setSpacing(8)
+        for title_text, label in (("Это ИИ", "ai"), ("Это человек", "human")):
+            button = QPushButton(title_text)
             button.clicked.connect(lambda _checked=False, value=label: self._label_track(value))
             label_layout.addWidget(button)
         blacklist_button = QPushButton("Автора — в чёрный список")
@@ -792,7 +990,30 @@ class DetectorWindow(QMainWindow):
         )
         label_layout.addWidget(blacklist_button)
         layout.addWidget(label_box)
+        layout.addStretch(1)
+        scroll.setWidget(body)
+        outer.addWidget(scroll, stretch=1)
         return panel
+
+    def _apply_sidebar_layout(self, visible: bool) -> None:
+        """Open: rounded side card + gap + main. Closed: spine tongue on the left edge."""
+        self._sidebar_open = visible
+        self._side_panel.setVisible(visible)
+        self._sidebar_reveal.setVisible(not visible)
+        if visible:
+            self._shell_layout.setContentsMargins(OUTER_MARGIN, GAP // 2, OUTER_MARGIN, OUTER_MARGIN)
+            self._shell_layout.setSpacing(GAP)
+        else:
+            self._shell_layout.setContentsMargins(0, GAP // 2, OUTER_MARGIN, OUTER_MARGIN)
+            self._shell_layout.setSpacing(GAP)
+
+    def _set_sidebar_visible(self, visible: bool) -> None:
+        self._apply_sidebar_layout(visible)
+        if self._sidebar_action is not None:
+            self._sidebar_action.blockSignals(True)
+            self._sidebar_action.setChecked(visible)
+            self._sidebar_action.blockSignals(False)
+        QTimer.singleShot(0, self._relayout_elided)
 
     def _numeric_input(self, field: NumericField) -> QSpinBox | QDoubleSpinBox:
         value: float = float(getattr(self._settings, field.key))
@@ -800,6 +1021,8 @@ class DetectorWindow(QMainWindow):
             spin_int = QSpinBox()
             spin_int.setRange(int(field.minimum), int(field.maximum))
             spin_int.setValue(int(value))
+            spin_int.setMinimumWidth(0)
+            spin_int.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             spin_int.valueChanged.connect(self._on_setting_changed)
             spin_int.lineEdit().setTextMargins(SPIN_TEXT_INDENT, 0, 0, 0)
             return spin_int
@@ -808,16 +1031,27 @@ class DetectorWindow(QMainWindow):
         spin.setRange(field.minimum, field.maximum)
         spin.setSingleStep(field.step)
         spin.setValue(value)
+        spin.setMinimumWidth(0)
+        spin.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         spin.valueChanged.connect(self._on_setting_changed)
         spin.lineEdit().setTextMargins(SPIN_TEXT_INDENT, 0, 0, 0)
         return spin
 
     def _build_tabs(self) -> QTabWidget:
         tabs = QTabWidget()
+        tabs.setMinimumSize(0, 0)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tabs.setUsesScrollButtons(True)
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideRight)
+        tabs.tabBar().setUsesScrollButtons(True)
+        tabs.tabBar().setMinimumWidth(0)
 
         detectors = QWidget()
+        detectors.setMinimumSize(0, 0)
         detectors_layout = card_column(detectors, CARD_PADDING)
-        self._score_plot = pg.PlotWidget(title="Fakeprint: балл Suno по треку (красная линия — порог)")
+        self._score_plot = self._shrinkable_plot(
+            pg.PlotWidget(title="Fakeprint: балл Suno по треку (красная линия — порог)")
+        )
         self._score_plot.setLabel("bottom", "время трека, с")
         self._score_plot.setYRange(*SCORE_AXIS)
         self._score_plot.showGrid(x=True, y=True, alpha=PLOT_GRID_ALPHA)
@@ -834,8 +1068,8 @@ class DetectorWindow(QMainWindow):
         self._score_plot.addItem(self._min_seconds_line)
         detectors_layout.addWidget(self._score_plot, stretch=3)
 
-        self._comb_plot = pg.PlotWidget(
-            title="Гребёнка 200 Гц по растущему окну (красная точка — выше порога = Suno)"
+        self._comb_plot = self._shrinkable_plot(
+            pg.PlotWidget(title="Гребёнка 200 Гц по растущему окну (красная точка — выше порога = Suno)")
         )
         self._comb_plot.setLabel("bottom", "секунд звука трека")
         self._comb_plot.getViewBox().setXRange(0.0, COMB_CHECKPOINTS[-1].seconds + 2.5, padding=0)
@@ -855,12 +1089,16 @@ class DetectorWindow(QMainWindow):
 
         spectrum = QWidget()
         spectrum_layout = card_column(spectrum, CARD_PADDING)
-        self._fakeprint_plot = pg.PlotWidget(title="Отпечаток: спектральные пики 1–8 кГц (у Suno — регулярная «гребёнка»)")
+        self._fakeprint_plot = self._shrinkable_plot(
+            pg.PlotWidget(title="Отпечаток: спектральные пики 1–8 кГц (у Suno — регулярная «гребёнка»)")
+        )
         self._fakeprint_plot.setLabel("bottom", "кГц")
         self._fakeprint_plot.setYRange(0.0, 1.0)
         self._fakeprint_curve = self._fakeprint_plot.plot(pen=pg.mkPen(ACCENT_VIOLET, width=1))
         spectrum_layout.addWidget(self._fakeprint_plot)
-        self._spectrogram_plot = pg.PlotWidget(title="Остаточная спектрограмма 1–8 кГц (артефакты — ровные горизонтальные линии), время →")
+        self._spectrogram_plot = self._shrinkable_plot(
+            pg.PlotWidget(title="Остаточная спектрограмма 1–8 кГц (артефакты — ровные горизонтальные линии), время →")
+        )
         self._spectrogram_plot.hideAxis("left")
         self._spectrogram_plot.hideAxis("bottom")
         self._spectrogram_image = pg.ImageItem()
@@ -932,16 +1170,23 @@ class DetectorWindow(QMainWindow):
         quit_action = file_menu.addAction("Выход", self._quit)
         quit_action.setShortcut(QKeySequence("Ctrl+Q"))
 
+        view_menu = bar.addMenu("Вид")
+        self._sidebar_action = view_menu.addAction("Боковая панель")
+        self._sidebar_action.setCheckable(True)
+        self._sidebar_action.setChecked(True)
+        self._sidebar_action.setShortcut(QKeySequence("Ctrl+B"))
+        self._sidebar_action.toggled.connect(self._set_sidebar_visible)
+
         settings_menu = bar.addMenu("Настройки")
         settings_menu.setToolTipsVisible(True)
         self._notify_action = settings_menu.addAction("Показывать уведомления")
         self._notify_action.setCheckable(True)
         self._notify_action.setChecked(self._settings.notifications_enabled)
         self._notify_action.toggled.connect(lambda on: self._apply_settings(replace(self._settings, notifications_enabled=on)))
-        launch_action = settings_menu.addAction("Слушать сразу после запуска")
-        launch_action.setCheckable(True)
-        launch_action.setChecked(self._settings.listen_on_launch)
-        launch_action.toggled.connect(lambda on: self._apply_settings(replace(self._settings, listen_on_launch=on)))
+        self._launch_action = settings_menu.addAction("Слушать сразу после запуска")
+        self._launch_action.setCheckable(True)
+        self._launch_action.setChecked(self._settings.listen_on_launch)
+        self._launch_action.toggled.connect(lambda on: self._apply_settings(replace(self._settings, listen_on_launch=on)))
         self._autostart_action = settings_menu.addAction("Запускать вместе с Windows")
         self._autostart_action.setCheckable(True)
         self._autostart_action.setEnabled(FROZEN)
@@ -1020,7 +1265,10 @@ class DetectorWindow(QMainWindow):
             "Автора — в чёрный список", lambda: self._blacklist_track(self._track, BlacklistAction.ADD, BlacklistSource.BUTTON)
         )
         menu.addSeparator()
-        menu.addAction(self._notify_action)
+        notify_action: QAction | None = self._notify_action
+        if notify_action is None:
+            raise TrayUnavailableError("notify action missing before tray menu")
+        menu.addAction(notify_action)
         menu.addAction("Выход", self._quit)
         self._tray_menu = menu
         self._tray.setContextMenu(menu)
@@ -1048,6 +1296,54 @@ class DetectorWindow(QMainWindow):
             record_audio=self._record_check.isChecked(),
             session_log_enabled=self._session_log_check.isChecked(),
         )
+
+    def _load_settings_into_widgets(self, settings: AppSettings) -> None:
+        """Push settings into controls without emitting change signals."""
+        widgets: list[QWidget] = [
+            self._mode_box,
+            self._rhythm_check,
+            self._record_check,
+            self._session_log_check,
+            *self._numeric_inputs.values(),
+        ]
+        for widget in widgets:
+            widget.blockSignals(True)
+        self._mode_box.setCurrentIndex([m for m, _ in MODE_CHOICES].index(settings.mode))
+        for key, spin in self._numeric_inputs.items():
+            value: float = float(getattr(settings, key))
+            if isinstance(spin, QSpinBox):
+                spin.setValue(int(value))
+            else:
+                spin.setValue(value)
+        self._rhythm_check.setChecked(settings.rhythm_enabled)
+        self._record_check.setChecked(settings.record_audio)
+        self._session_log_check.setChecked(settings.session_log_enabled)
+        for widget in widgets:
+            widget.blockSignals(False)
+        if self._notify_action is not None:
+            self._notify_action.blockSignals(True)
+            self._notify_action.setChecked(settings.notifications_enabled)
+            self._notify_action.blockSignals(False)
+        if self._launch_action is not None:
+            self._launch_action.blockSignals(True)
+            self._launch_action.setChecked(settings.listen_on_launch)
+            self._launch_action.blockSignals(False)
+
+    def _reset_settings_to_defaults(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Сбросить настройки",
+            "Вернуть все настройки к значениям по умолчанию?\n"
+            f"Сдвиг порога станет {DEFAULT_SETTINGS.threshold_offset:g}, "
+            f"подтверждение — {DEFAULT_SETTINGS.confirm_seconds:g} с.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._load_settings_into_widgets(DEFAULT_SETTINGS)
+        self._apply_settings(DEFAULT_SETTINGS)
+        self._append_log("настройки сброшены к значениям по умолчанию")
 
     def _on_setting_changed(self) -> None:
         self._apply_settings(self._read_settings_from_widgets())
@@ -1146,12 +1442,14 @@ class DetectorWindow(QMainWindow):
     def _handle_event(self, event: GuiEvent) -> None:
         match event:
             case CaptureStarted(device_name=name, sample_rate=rate, channels=channels):
-                self._device_label.setText(f"{name}, {rate} Гц, {channels} кан.")
+                self._device_full_text = f"{name}, {rate} Гц, {channels} кан."
                 self._device_label.setStyleSheet("")
+                self._set_elided(self._device_label, self._device_full_text)
                 self._append_log(f"захват: {name}, {rate} Гц")
             case CapturePaused(reason=reason):
-                self._device_label.setText("Звук не захватывается, жду другое устройство вывода")
+                self._device_full_text = "Звук не захватывается, жду другое устройство вывода"
                 self._device_label.setStyleSheet(f"color: {STATUS_COLORS['DETECTED']};")
+                self._set_elided(self._device_label, self._device_full_text)
                 self._append_log(f"ВНИМАНИЕ: устройство вывода по умолчанию не захватывается: {reason}")
                 self._notify(
                     f"{APP_NAME} не слышит звук",
@@ -1207,6 +1505,7 @@ class DetectorWindow(QMainWindow):
             evaluation.lock_contrast,
             evaluation.shifted_original_score,
             evaluation.speed,
+            evaluation.factory,
             evaluation.threshold,
             evaluation.phase,
         )
@@ -1239,9 +1538,14 @@ class DetectorWindow(QMainWindow):
             if self._settings.mode is Mode.LOG:
                 self._notify(f"Похоже на Suno: {describe(evaluation.track)}", reason, STATUS_COLORS["DETECTED"])
 
+    def _draw_detector_metrics(self, point: ScorePoint | None, factory: FactoryScore | None) -> None:
+        self._set_elided(self._fakeprint_reason, fakeprint_metric(point))
+        self._set_elided(self._shifted_reason, shifted_metric(point))
+        self._set_elided(self._comb_reason, comb_metric(self._comb_scores))
+        self._set_elided(self._factory_reason, factory_metric(factory))
+
     def _draw_evaluation(self, evaluation: Evaluation, point: ScorePoint) -> None:
-        self._fakeprint_reason.setText(fakeprint_text(point))
-        self._shifted_reason.setText(shifted_text(point))
+        self._draw_detector_metrics(point, evaluation.factory)
         self._draw_score_chart()
         self._fakeprint_curve.setData(np.linspace(1.0, 8.0, evaluation.fakeprint.size), evaluation.fakeprint)
         self._spectrogram_image.setImage(self._spectrogram, levels=(0.0, 1.0), autoLevels=False)
@@ -1251,12 +1555,27 @@ class DetectorWindow(QMainWindow):
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
+        self._relayout_elided()
         if self._last_evaluation is not None and self._score_points:
             self._draw_evaluation(self._last_evaluation, self._score_points[-1])
 
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._relayout_elided()
+
+    def _relayout_elided(self) -> None:
+        if not hasattr(self, "_track_label") or not hasattr(self, "_fakeprint_reason"):
+            return
+        self._set_elided(self._track_label, self._track_full_text)
+        self._set_elided(self._device_label, self._device_full_text)
+        if self._last_evaluation is not None and self._score_points:
+            self._draw_detector_metrics(self._score_points[-1], self._last_evaluation.factory)
+        else:
+            self._draw_detector_metrics(None, None)
+
     def _on_comb(self, checkpoint: Checkpoint, score: float) -> None:
         self._comb_scores.append((checkpoint, score))
-        self._comb_reason.setText(comb_text(self._comb_scores))
+        self._set_elided(self._comb_reason, comb_metric(self._comb_scores))
         self._draw_comb_chart()
         self._append_log(comb_text(self._comb_scores))
 
@@ -1267,11 +1586,10 @@ class DetectorWindow(QMainWindow):
         self._last_evaluation = None
         self._comb_scores = []
         app: str = f"  ·  {track.app_id}" if track is not None else ""
-        self._track_label.setText(f"{describe(track)}{app}")
+        self._track_full_text = f"{describe(track)}{app}"
+        self._set_elided(self._track_label, self._track_full_text)
         self._tray.setToolTip(f"{APP_NAME}: {STATUS_TEXT[self._status]}\n{describe(track)}")
-        self._fakeprint_reason.setText(fakeprint_text(None))
-        self._shifted_reason.setText(shifted_text(None))
-        self._comb_reason.setText(comb_text([]))
+        self._draw_detector_metrics(None, None)
         self._draw_score_chart()
         self._draw_comb_chart()
         self._fakeprint_curve.setData([], [])
@@ -1341,9 +1659,7 @@ class DetectorWindow(QMainWindow):
         self._applied_status = status
         self._status = status
         self._status_label.setText(STATUS_TEXT[status])
-        self._status_label.setStyleSheet(
-            f"background: {STATUS_COLORS[status]}; color: white; font-size: 20px; font-weight: 700; border-radius: 12px;"
-        )
+        self._status_label.setStyleSheet(f"QLabel#statusChip {{ background: {STATUS_COLORS[status]}; }}")
         color = QColor(STATUS_COLORS[status])
         self._verdict_card.setStyleSheet(
             f"QFrame#card {{ border: 1px solid rgba({color.red()}, {color.green()}, {color.blue()}, {VERDICT_BORDER_ALPHA}); }}"

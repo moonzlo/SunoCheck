@@ -25,9 +25,17 @@ class Checkpoint:
 
 # research/comb_growing.py: human max per window length over 1450 tracks (725 x orig/AAC 128) + 0.5 dB,
 # never below the previous checkpoint. 0 humans fire; Suno orig/AAC 128 flagged by 5 s 63/33 %,
-# by 10 s 83/64 %, by 45 s 96/91 %.
+# by 10 s 83/64 %, by 45 s 96/91 %. H42 / E15 + h42_long_thresholds: 90/180 s keep the same −0.85
+# (Jamendo human_max ≪ −0.85; do not loosen below the short-window calibration).
+# TTD (2026-10-16): 1.0/1.5/2.0 s inherit the 2.5 s bar (−2.4); FPR 0 on 80 FMA humans (orig∪aac).
+# 3.0/4.0 s cut the wait from 2.5→5 for tracks that cross between coarse points (same bars).
 CHECKPOINTS: tuple[Checkpoint, ...] = (
+    Checkpoint(1.0, -2.4),
+    Checkpoint(1.5, -2.4),
+    Checkpoint(2.0, -2.4),
     Checkpoint(2.5, -2.4),
+    Checkpoint(3.0, -2.3),
+    Checkpoint(4.0, -2.2),
     Checkpoint(5.0, -2.2),
     Checkpoint(7.5, -2.1),
     Checkpoint(10.0, -1.9),
@@ -36,6 +44,8 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
     Checkpoint(20.0, -0.85),
     Checkpoint(30.0, -0.85),
     Checkpoint(45.0, -0.85),
+    Checkpoint(90.0, -0.85),
+    Checkpoint(180.0, -0.85),
 )
 BASE_HZ: float = 200.0
 LOW_HZ: float = 1000.0
@@ -43,6 +53,12 @@ HIGH_HZ: float = 15800.0
 LOCAL_HZ: float = 5.0
 DENSITY_QUANTILE: float = 0.995
 POWER_FLOOR: float = 1e-20
+# research H41 / E17: clock skew and acoustic paths move lines by ε·f; one contrast FFT then
+# max over base = 200·(1+ε) restores the score. Grid ±150 ppm at 0.5 ppm (~0.5/(f_max·T) at 45 s).
+PPM_REFINE_LO: float = -150.0
+PPM_REFINE_HI: float = 150.0
+PPM_REFINE_STEP: float = 0.5
+_PPM_GRID: NDArray[np.float64] = np.arange(PPM_REFINE_LO, PPM_REFINE_HI + PPM_REFINE_STEP * 0.5, PPM_REFINE_STEP)
 
 
 class SampleRateTooLowError(ValueError):
@@ -75,13 +91,33 @@ def contrast_db(segment: FloatArray, sample_rate: int) -> tuple[NDArray[np.float
     return 10.0 * np.log10(np.maximum(power, POWER_FLOOR) / np.maximum(local, POWER_FLOOR)), bin_hz
 
 
-def comb_score(segment: FloatArray, sample_rate: int) -> float:
-    contrast, bin_hz = contrast_db(segment, sample_rate)
-    harmonics: NDArray[np.float64] = np.arange(np.ceil(LOW_HZ / BASE_HZ), HIGH_HZ // BASE_HZ) * BASE_HZ
+def comb_score_at_base(contrast: NDArray[np.float64], bin_hz: float, base_hz: float) -> float:
+    """Median tooth contrast at k·base_hz minus the band density quantile (same as the r = 1 score)."""
+    harmonics: NDArray[np.float64] = np.arange(np.ceil(LOW_HZ / base_hz), HIGH_HZ // base_hz) * base_hz
     centers: NDArray[np.intp] = np.rint(harmonics / bin_hz).astype(np.intp)
+    centers = centers[(centers >= 1) & (centers + 1 < contrast.size)]
+    if centers.size == 0:
+        return float("-inf")
     lines: NDArray[np.float64] = np.max(np.stack([contrast[centers - 1], contrast[centers], contrast[centers + 1]]), axis=0)
     band: NDArray[np.float64] = maximum_filter1d(contrast[int(LOW_HZ / bin_hz) : int(HIGH_HZ / bin_hz)], 3)
     return float(np.median(lines) - np.quantile(band, DENSITY_QUANTILE))
+
+
+def comb_score(segment: FloatArray, sample_rate: int) -> float:
+    """Coherent comb score with ppm refine (H41): max over bases 200·(1+ε), ε on `_PPM_GRID`."""
+    contrast, bin_hz = contrast_db(segment, sample_rate)
+    best: float = float("-inf")
+    for ppm in _PPM_GRID:
+        score = comb_score_at_base(contrast, bin_hz, BASE_HZ * (1.0 + float(ppm) * 1e-6))
+        if score > best:
+            best = score
+    return best
+
+
+def comb_score_fixed(segment: FloatArray, sample_rate: int) -> float:
+    """Score at exactly 200 Hz (no ppm refine). Kept for A/B and research scripts."""
+    contrast, bin_hz = contrast_db(segment, sample_rate)
+    return comb_score_at_base(contrast, bin_hz, BASE_HZ)
 
 
 def push_comb_audio(state: CombState, chunk: FloatArray, sample_rate: int) -> CombState:

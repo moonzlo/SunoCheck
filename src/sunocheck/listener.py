@@ -44,6 +44,14 @@ from sunocheck.decision import (
     score_threshold,
     update_evidence,
 )
+from sunocheck.factory_fakeprint import (
+    FACTORY_MODEL_PATH,
+    FactoryModel,
+    FactoryScore,
+    factory_joint,
+    factory_score,
+    load_factory_model,
+)
 from sunocheck.fakeprint import (
     MODEL_SAMPLE_RATE,
     SHIFTED_MODEL_PATH,
@@ -74,6 +82,8 @@ SILENCE_FRAME_SECONDS: float = 0.02
 RHYTHM_INTERVAL_SECONDS: float = 5.0
 # Pace of the slowdown search (research H23 was validated at 0.5 s steps with the 1 s confirmation).
 SPEED_INTERVAL_SECONDS: float = 0.5
+# Factory LR @ 32 kHz (H29): ~7.5 s loud window; re-score once per second after enough native audio.
+FACTORY_INTERVAL_SECONDS: float = 1.0
 RECORDING_MIN_SECONDS: float = 8.0
 SESSION_POLL_SECONDS: float = 1.0
 SESSION_TIMEOUT_SECONDS: float = 5.0
@@ -128,6 +138,8 @@ class TrackState:
     max_score: float
     speed: SpeedScore | None
     speed_submitted_at: int
+    factory: FactoryScore | None
+    factory_submitted_at: int
 
 
 @dataclass(frozen=True)
@@ -185,6 +197,7 @@ class Evaluation:
     rhythm: RhythmMetrics | None
     comb_score: float | None
     comb_detected: bool
+    factory: FactoryScore | None
     blacklisted: bool
 
 
@@ -209,6 +222,12 @@ class CombJob:
 class SpeedJob:
     serial: int
     future: "Future[SpeedScore]"
+
+
+@dataclass(frozen=True)
+class FactoryJob:
+    serial: int
+    future: "Future[FactoryScore]"
 
 
 @dataclass(frozen=True)
@@ -258,6 +277,8 @@ def new_track(info: TrackInfo | None, serial: int) -> TrackState:
         max_score=float("-inf"),
         speed=None,
         speed_submitted_at=0,
+        factory=None,
+        factory_submitted_at=0,
     )
 
 
@@ -267,6 +288,15 @@ def is_due_for_speed(track: TrackState, interval_samples: int) -> bool:
         track.evidence.phase is not Phase.DETECTED
         and track.samples >= int(THRESHOLD_CURVE[0][0] * MODEL_SAMPLE_RATE)
         and track.total_samples - track.speed_submitted_at >= interval_samples
+    )
+
+
+def is_due_for_factory(track: TrackState, sample_rate: int, interval_samples: int) -> bool:
+    """Needs ~7.5 s of capture-rate audio for the 32 kHz loud window; skip once detected."""
+    return (
+        track.evidence.phase is not Phase.DETECTED
+        and track.native_samples >= int(9.0 * sample_rate)
+        and track.native_samples - track.factory_submitted_at >= interval_samples
     )
 
 
@@ -374,7 +404,7 @@ def evaluate(
     threshold: float = score_threshold(buffered_seconds, config.decision.threshold_offset)
     evidence: Evidence = update_evidence(track.evidence, score, shifted, track.speed, threshold, track_seconds, config.decision)
     blacklisted: bool = is_blacklisted(track, config, skipped)
-    if comb_detected(track.comb) or blacklisted:
+    if comb_detected(track.comb) or factory_joint(track.factory) or blacklisted:
         evidence = Evidence(phase=Phase.DETECTED, strong_since=evidence.strong_since)
     evaluation = Evaluation(
         track=track.info,
@@ -394,6 +424,7 @@ def evaluate(
         rhythm=rhythm_metrics(np.concatenate(track.chunks), MODEL_SAMPLE_RATE) if with_rhythm else None,
         comb_score=last_comb_score(track.comb),
         comb_detected=comb_detected(track.comb),
+        factory=track.factory,
         blacklisted=blacklisted,
     )
     return evaluation, evidence
@@ -440,6 +471,10 @@ def run_listener(
     # The slowdown search (~45 ms) runs beside the loop too; its latest result counts until the next one.
     speed_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speed")
     speed_job: SpeedJob | None = None
+    # Factory LR (~spectrum + r-grid) on capture-rate audio @ 32 kHz (research H29).
+    factory_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="factory")
+    factory_job: FactoryJob | None = None
+    factory_model: FactoryModel = load_factory_model(FACTORY_MODEL_PATH)
     shifted_model: FakeprintModel = load_model(SHIFTED_MODEL_PATH)
     skipped: TrackInfo | None = None
 
@@ -459,6 +494,11 @@ def run_listener(
                 if speed_job.serial == track.serial:
                     track = replace(track, speed=speed_job.future.result())
                 speed_job = None
+
+            if factory_job is not None and factory_job.future.done():
+                if factory_job.serial == track.serial:
+                    track = replace(track, factory=factory_job.future.result())
+                factory_job = None
 
             while not session_watcher.events.empty():
                 match session_watcher.events.get_nowait():
@@ -540,6 +580,18 @@ def run_listener(
             if speed_job is None and is_due_for_speed(track, int(SPEED_INTERVAL_SECONDS * MODEL_SAMPLE_RATE)):
                 speed_job = SpeedJob(track.serial, speed_pool.submit(speed_score, stream_mean_db(track.spectrum), model))
                 track = replace(track, speed_submitted_at=track.total_samples)
+            if (
+                active is not None
+                and factory_job is None
+                and is_due_for_factory(track, active.rate, int(FACTORY_INTERVAL_SECONDS * active.rate))
+                and track.native_chunks
+            ):
+                native = np.concatenate(track.native_chunks)
+                factory_job = FactoryJob(
+                    track.serial,
+                    factory_pool.submit(factory_score, native, active.rate, factory_model),
+                )
+                track = replace(track, factory_submitted_at=track.native_samples)
             interval_samples: int = int(config.eval_interval_seconds * MODEL_SAMPLE_RATE)
             if not is_due_for_evaluation(track, int(config.min_seconds * MODEL_SAMPLE_RATE), interval_samples):
                 continue
@@ -566,6 +618,7 @@ def run_listener(
     finally:
         comb_pool.shutdown(wait=False, cancel_futures=True)
         speed_pool.shutdown(wait=False, cancel_futures=True)
+        factory_pool.shutdown(wait=False, cancel_futures=True)
         session_watcher.stop()
         if active is not None:
             active.capture.close()

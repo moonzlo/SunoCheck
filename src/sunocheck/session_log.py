@@ -4,6 +4,7 @@ import csv
 from datetime import datetime
 from pathlib import Path
 
+from sunocheck.factory_fakeprint import factory_joint
 from sunocheck.listener import Evaluation
 from sunocheck.media_session import TrackInfo
 
@@ -36,6 +37,10 @@ EVALUATION_HEADER: tuple[str, ...] = (
     "speed_contrast",
     "speed_ratio",
     "shifted_original_score",
+    "factory_score",
+    "factory_contrast",
+    "factory_ratio",
+    "factory_detected",
 )
 LABEL_HEADER: tuple[str, ...] = ("time", "app", "artist", "title", "label", "max_score")
 
@@ -67,6 +72,14 @@ def evaluation_row(evaluation: Evaluation, now: datetime) -> tuple[str, ...]:
     speed_values: tuple[str, ...] = ("",) * 3
     if evaluation.speed is not None:
         speed_values = (f"{evaluation.speed.score:.3f}", f"{evaluation.speed.lock_contrast:.3f}", f"{evaluation.speed.ratio:.5f}")
+    factory_values: tuple[str, ...] = ("",) * 4
+    if evaluation.factory is not None:
+        factory_values = (
+            f"{evaluation.factory.score:.3f}",
+            f"{evaluation.factory.lock_contrast:.3f}",
+            f"{evaluation.factory.ratio:.5f}",
+            str(int(factory_joint(evaluation.factory))),
+        )
     s = evaluation.spectral
     return (
         now.isoformat(timespec="milliseconds"),
@@ -88,6 +101,7 @@ def evaluation_row(evaluation: Evaluation, now: datetime) -> tuple[str, ...]:
         "" if evaluation.lock_contrast is None else f"{evaluation.lock_contrast:.3f}",
         *speed_values,
         f"{evaluation.shifted_original_score:.3f}",
+        *factory_values,
     )
 
 
