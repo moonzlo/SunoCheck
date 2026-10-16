@@ -62,6 +62,7 @@ def main(out: Path) -> None:
                 rhythm=None,
                 comb_score=None,
                 comb_detected=False,
+                factory=None,
                 blacklisted=False,
             )
         )
